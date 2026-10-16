@@ -1,0 +1,52 @@
+{
+ "_about": "Changes applied to the source for the public build only (build.py public). Each 'from' must appear exactly once in the source after the personal blocks are stripped. Then the mod is renamed: every 'Passive Picker' becomes '<name>', every 'PassivePicker' (files, global) becomes '<name without spaces>', and the addon path becomes mods/<author>/<addon>.",
+ "author": "vibeslacker",
+ "replace": [
+  {
+   "from": "-- Passive Picker, test build 0.23, for Bingus Shared Loader v15+.",
+   "to": "-- Passive Picker 1.0.1, for Bingus Shared Loader v15+."
+  },
+  {
+   "from": "local REVISION = \"Passive Picker test 0.23\"",
+   "to": "local REVISION = \"Passive Picker 1.0.1\""
+  },
+  {
+   "from": "-- DiverKit is held still (its own \"visible\" flag is cleared, which makes it\n-- skip its frame; its panel stays drawn) and a click here cannot also press one\n-- of its buttons. hold_diverkit = 0 in the settings file turns that off.",
+   "to": "-- DiverKit is held still (its own \"visible\" flag is cleared, which makes it\n-- skip its frame; its panel stays drawn) so a click here cannot also press one\n-- of its buttons. Only matters with DiverKit installed; hold_diverkit = 0 in the\n-- settings file turns that off."
+  },
+  {
+   "from": "{ \"hold_diverkit\", 1, \"1 = DiverKit ignores the mouse while it is on the passive box or the grid is open (so a click here cannot press a DiverKit button underneath), 0 = off\" }",
+   "to": "{ \"hold_diverkit\", 1, \"only matters with the DiverKit mod installed: 1 = DiverKit ignores the mouse while it is on the passive box or the grid is open (so a click here cannot press a DiverKit button underneath), 0 = DiverKit is left alone\" }"
+  },
+  {
+   "from": "\"grid: bottom edge (274 = just above DiverKit's 15-slot panel)\"",
+   "to": "\"grid: bottom edge (the grid can also be dragged by its title line)\""
+  },
+  {
+   "from": "{ \"box_x\", 248, \"box: left edge\" }",
+   "to": "{ \"box_x\", 127, \"box: left edge (127 = centered on the card)\" }"
+  },
+  {
+   "from": "{ \"box_y\", -44, \"box: bottom edge (negative = below the EQUIPMENT button)\" }",
+   "to": "{ \"box_y\", 54, \"box: bottom edge (54 = just above the EQUIPMENT button, negative = below it)\" }"
+  },
+  {
+   "from": "{ \"box_text\", 13, \"box: text size\" }",
+   "to": "{ \"box_text\", 15, \"box: text size\" }"
+  },
+  {
+   "from": "{ \"grid_text\", 12, \"grid: text size\" }",
+   "to": "{ \"grid_text\", 14, \"grid: text size\" }"
+  },
+  {
+   "from": "{ \"box_alpha\", 215, \"box: how solid its black background is (0 = see-through, 255 = solid)\" }",
+   "to": "{ \"box_alpha\", 195, \"box: how solid its black background is (0 = see-through, 255 = solid)\" }"
+  },
+  {
+   "from": "{ \"grid_alpha\", 238, \"grid: how solid its black background is (0 = see-through, 255 = solid)\" }",
+   "to": "{ \"grid_alpha\", 170, \"grid: how solid its black background is (0 = see-through, 255 = solid)\" }"
+  }
+ ],
+ "name": "Simple Armor Passive Picker",
+ "addon": "simple_armor_passive_picker"
+}

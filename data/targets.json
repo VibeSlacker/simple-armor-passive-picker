@@ -1,0 +1,111 @@
+{
+ "_about": "What the mod needs from game.dll, as offsets in game build 25480438 (read from the mod's own log on 2026-10-11), for tools/make_sigs.py. 'avoid' spans are the code the borrowed signatures sat on, so the new ones are cut from other places. 'keep' entries are copied through unchanged (personal build only).",
+ "build": 25480438,
+ "code_end": "0x2111000",
+ "targets": [
+  {
+   "name": "ui_manager",
+   "symbol": "manager",
+   "rva": "0x3326E68",
+   "avoid": [
+    [
+     "0xb938d4",
+     "0xb93934"
+    ]
+   ]
+  },
+  {
+   "name": "armor_catalog",
+   "symbol": "armor_catalog",
+   "rva": "0x33264F8",
+   "avoid": [
+    [
+     "0x196e3da",
+     "0x196e454"
+    ]
+   ]
+  },
+  {
+   "name": "progression",
+   "symbol": "progression",
+   "rva": "0x347CEF8",
+   "avoid": [
+    [
+     "0x136f910",
+     "0x136f9a6"
+    ]
+   ]
+  },
+  {
+   "name": "players",
+   "symbol": "players",
+   "rva": "0x3326468",
+   "avoid": [
+    [
+     "0x1465aa0",
+     "0x1465b01"
+    ]
+   ],
+   "optional": true
+  },
+  {
+   "name": "ui_material",
+   "symbol": "material",
+   "rva": "0x37C5478",
+   "avoid": [
+    [
+     "0x1388030",
+     "0x1388096"
+    ]
+   ],
+   "optional": true
+  },
+  {
+   "name": "ui_font",
+   "symbol": "font",
+   "rva": "0x3772268",
+   "avoid": [
+    [
+     "0x1388030",
+     "0x1388096"
+    ]
+   ],
+   "optional": true
+  },
+  {
+   "name": "ui_atlas",
+   "symbol": "atlas",
+   "rva": "0x3772EE8",
+   "avoid": [],
+   "optional": true,
+   "_note": "the game's code points at the atlas from one place only, so this one cannot move; it gets its own window on that place"
+  },
+  {
+   "name": "input_consume_call",
+   "symbol": "input_consume",
+   "rva": "0x12FDE90",
+   "avoid": [
+    [
+     "0x12fde90",
+     "0x12fdea4"
+    ]
+   ],
+   "call": true,
+   "optional": true
+  }
+ ],
+ "keep": [
+  {
+   "name": "card_refresh",
+   "hex": "40554883ec604c89642450488be94c897424484c8be24c8db158590000488991f0ed01004488810cee01004488890eee01004180bec45e0100004c897c2440450fb6f8458886c55e01000f851f01000041f706000080007416418b86a800000048c1e80ba9ff0700000f85000100004183bec05e01000148899c24800000004889b4248800000048897c24587544f30f108918350100f30f598908350100f30f1005eeb3b200f30f11442470f30f580d74aeb200f30f114c2474488b5c247048c744247000000000488bd3488b7c2470eb62f30f1089985b00000f57c0f30f5989885b0000c74424780000f043c74424700000f043f30f114c2474f30f5c0d7dafb200488b5c2470f30f580d18aeb200f30f114c247c488b542478f30f100d6db9b200f30f11442478f30f114c247c488b7c2478498bcee8e4a8baff488bd3498d8e10010000e8d5a8baff488bd7498d8e10010000e806aebaff488b7c2458488bb42488000000488b9c2480000000498d8e200200004533c9450fb6c7498bd4e81b91ffff498d8ea0db0000450fb6c7",
+   "mask": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000ffffffffffffffffffff00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000ffffffffffffffffff00000000ffffffffffffffffffffffffffffff00000000ffffffffffffffffffffffffffffffffffffffffff00000000ffffffffffffffffffffff00000000ffffffffffffffffffffff00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000ffffffffffffffffffffff",
+   "anchor": "4c8db158590000488991f0ed0100",
+   "anchor_offset": 22,
+   "extract_offset": 385,
+   "extract_end": 389,
+   "symbol": "card_widget",
+   "optional": true,
+   "personal": true
+  }
+ ]
+}

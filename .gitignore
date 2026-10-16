@@ -1,0 +1,11 @@
+# kept local, never published
+reference/
+backups/
+__pycache__/
+build/
+build-public/
+syntax.lua
+release/*.zip
+release/DIVERKIT-BUG-REPORT.txt
+release/PERMISSIONS-AND-MESSAGES.md
+release/NEXUS-PAGE-DRAFT.md
