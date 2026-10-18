@@ -329,7 +329,7 @@ elseif mode == "saved" then
 	check(text:find("hard set: 1 armor(s) given their saved class and passive", 1, true), "log counts one armor")
 	check(weights(ARMOR[3]):find("^0:2%.0%.2%.abcd 4%.0%.2") ~= nil and r64(ARMOR[1].at + 48) == ARMOR[1].list and r64(ARMOR[2].at + 48) == ARMOR[2].list,
 		"saved class written at start, other armors keep their own")
-	check(find_text(surface(), "FORTIFIED [SET]") ~= nil and find_text(surface(), "HEAVY [SET]") ~= nil, "both boxes mark what is set")
+	check(find_text(surface(), "FORTIFIED [SET]") ~= nil and find_text(surface(), "ARMOR RATING 150 [SET]") ~= nil, "both boxes mark what is set (a 1.1.0 heavy line read as 150)")
 	keys[0x78] = true; run(2); keys[0x78] = nil; run(40)
 	check(r32(ARMOR[3].at + 28) == 3 and r32(cache + 0x3c) == 3, "F9 does nothing any more")
 	click_at(55 + BX + 80, 366 + BY + 14)
@@ -338,10 +338,10 @@ elseif mode == "saved" then
 	check(r32(ARMOR[3].at + 28) == 8 and r32(cache + 0x3c) == 8, "a grid pick of the armor's own passive puts record and cache back")
 	check(find_text(surface(), "SERVO-ASSISTED") ~= nil, "box drops the mark")
 	keys[0x75] = true; run(2); keys[0x75] = nil; run(2)
-	check(saved_text():find("3672418116 = 8, 2", 1, true), "F6 with only the class changed saves the class")
-	check(find_text(surface(), "HEAVY [SET]") ~= nil and find_text(surface(), "SERVO-ASSISTED") ~= nil, "the class box keeps its mark, the passive box has none")
+	check(saved_text():find("3672418116 = 8, 150", 1, true), "F6 with only the rating changed saves the rating")
+	check(find_text(surface(), "ARMOR RATING 150 [SET]") ~= nil and find_text(surface(), "SERVO-ASSISTED") ~= nil, "the rating box keeps its mark, the passive box has none")
 	click_at(55 + CBX + 40, 366 + BY + 13)
-	own = find_text(surface(), "ORIGINAL")
+	own = find_text(surface(), "ORIGINAL (100)")
 	click_at(own.x + 10, own.y + 2); point_at(1500, 200); run(3)
 	keys[0x75] = true; run(2); keys[0x75] = nil; run(2)
 	check(not saved_text():find("3672418116", 1, true), "F6 on the armor's own class and passive forgets the saved one")
@@ -421,8 +421,8 @@ else
 		check(t:find("box_x = 213\r\n", 1, true) and t:find("box_w = 201\r\n", 1, true) and t:find("eq_box_x = 213\r\n", 1, true) and t:find("class_w = 201\r\n", 1, true),
 			"box spots reset once and the file rewritten with the class box")
 		check(t:find("grid_alpha = 99\r\n", 1, true) and log_text():find("settings: file from before the class box", 1, true), "other settings kept, and the log says so")
-		local label = find_text(surface(), "MEDIUM")
-		check(label and math.abs(label.x - (55 + 6 + TX("MEDIUM"))) < 1.5, "the boxes split the card")
+		local label = find_text(surface(), "ARMOR RATING 100")
+		check(label and math.abs(label.x - (55 + 6 + TX("ARMOR RATING 100"))) < 1.5, "the boxes split the card")
 		f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
 	end
 
@@ -447,7 +447,7 @@ else
 		run(3)
 		g = surface()
 		label = find_text(g, "ENGINEERING KIT")
-		check(label and find_text(g, "PASSIVE") == nil and #g.texts == 2 and find_text(g, "LIGHT") ~= nil, case[1] .. ": the two boxes and nothing else, no square button")
+		check(label and find_text(g, "PASSIVE") == nil and #g.texts == 2 and find_text(g, "ARMOR RATING 50") ~= nil, case[1] .. ": the two boxes and nothing else, no square button")
 		check(label and label.x > 55 + BX and label.x < 55 + 420 and label.y > 366 + BY and label.y < 366 + BY + 26,
 			case[1] .. ": box on the MISSION STRATAGEMS line")
 		click_at(55 + 380, 366 + 174)
@@ -498,11 +498,11 @@ else
 	print("class box and its grid")
 	-- armor 3 (medium) worn, passive FORTIFIED
 	local STOCK3 = weights(ARMOR[3])
-	local CTITLE = "ARMOR CLASS   W S + SPACE"
+	local CTITLE = "ARMOR RATING   W S + SPACE"
 	local function class_open() return find_text(surface(), CTITLE) ~= nil end
 	local function open_class() click_at(55 + CBX + 40, 366 + BY + 13); point_at(1500, 200); run(3) end
-	local cbox = find_text(surface(), "MEDIUM")
-	check(cbox and math.abs(cbox.x - (55 + 6 + TX("MEDIUM"))) < 1.5 and cbox.y > 366 + BY and cbox.y < 366 + BY + 26, "class box on the left half of the card, showing the armor's class")
+	local cbox = find_text(surface(), "ARMOR RATING 100")
+	check(cbox and math.abs(cbox.x - (55 + 6 + TX("ARMOR RATING 100"))) < 1.5 and cbox.y > 366 + BY and cbox.y < 366 + BY + 26, "class box on the left half of the card, showing the armor's rating")
 	local pbox = find_text(surface(), "FORTIFIED")
 	check(pbox and math.abs(pbox.x - (55 + 213 + TX("FORTIFIED"))) < 1.5 and math.abs(pbox.y - cbox.y) < 0.5, "passive box on the right half, on the same line")
 	do
@@ -513,30 +513,40 @@ else
 	end
 	check(find_text(surface(), "FORTIFIED") ~= nil, "the passive box shows the passive alone")
 	open_class()
-	check(class_open() and find_text(surface(), "LIGHT") and find_text(surface(), "MEDIUM") and find_text(surface(), "HEAVY") and find_text(surface(), "ORIGINAL"), "class grid: light, medium, heavy and original")
-	check(not find_text(surface(), "MEDIUM *"), "no star marks")
+	do
+		local want, ok = { "50", "67", "83", "100", "133", "150", "ORIGINAL (100)" }, class_open()
+		for _, v in ipairs(want) do ok = ok and find_text(surface(), v) ~= nil end
+		check(ok and not find_text(surface(), "64") and not find_text(surface(), "79"), "rating grid: the stock ratings as near as three rated slots make them (64 and 70 both 67), and ORIGINAL")
+	end
+	check(not find_text(surface(), "100 *"), "no star marks")
 	check(find_text(surface(), "ENGINEERING KIT") == nil and not is_open(), "no passives in it")
-	local heavy = find_text(surface(), "HEAVY")
+	local heavy = find_text(surface(), "150")
 	click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
-	check(not class_open() and find_text(surface(), "HEAVY") ~= nil and find_text(surface(), "FORTIFIED") ~= nil, "a class pick closes the grid, the boxes show HEAVY and the same passive")
+	check(not class_open() and find_text(surface(), "ARMOR RATING 150") ~= nil and find_text(surface(), "FORTIFIED") ~= nil, "a pick closes the grid, the boxes show ARMOR RATING 150 and the same passive")
 	check(weights(ARMOR[3]) == "0:2.0.2.abcd 4.0.2.abcd 7.0.2.abcd 2.2.0.abcd 9.0.3.abcd | 1:2.0.2.abcd 4.0.2.abcd 7.0.2.abcd 2.2.0.abcd 9.0.3.abcd",
-		"every armor piece heavy in both bodies; other kinds, the none weight and all other bytes untouched")
+		"every rated piece heavy in both bodies; other kinds, the none weight and all other bytes untouched")
 	local list_heavy = r64(ARMOR[3].at + 48)
 	check(list_heavy ~= ARMOR[3].list and r32(ARMOR[3].at + 56) == 2, "the record points at a copy, body count unchanged")
-	check(log_text():find("CLASS SA-25 Steel Trooper: MEDIUM -> HEAVY", 1, true) and log_text():find("  cache before ", 1, true), "log shows the change and the cache around it")
+	check(log_text():find("CLASS SA-25 Steel Trooper: ARMOR RATING 100 -> ARMOR RATING 150", 1, true) and log_text():find("  cache before ", 1, true), "log shows the change and the cache around it")
 	check(r32(ARMOR[3].at + 28) == 3 and r32(r64(ARMOR[3].list + 8) + 16) == 1, "the passive and the game's own pieces are untouched")
 	open_class(); click_at(55 + BX + 80, 366 + BY + 14); point_at(1500, 200); run(3)
 	check(is_open() and not class_open(), "a click on the passive box switches to the passive grid")
 	click_at(1500, 200)
-	open_class(); local own = find_text(surface(), "ORIGINAL"); click_at(own.x + 10, own.y + 2); point_at(1500, 200); run(3)
+	open_class(); local own = find_text(surface(), "ORIGINAL (100)"); click_at(own.x + 10, own.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[3].at + 48) == ARMOR[3].list and weights(ARMOR[3]) == STOCK3, "the armor's own class puts its own body list back")
-	open_class(); heavy = find_text(surface(), "HEAVY"); click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
+	open_class(); heavy = find_text(surface(), "150"); click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[3].at + 48) == list_heavy, "the same copy is used again")
-	-- keyboard in the class grid (LIGHT, MEDIUM, HEAVY, ORIGINAL), starting on HEAVY
-	open_class(); tap(W); tap(SPACE)
-	check(not class_open() and r64(ARMOR[3].at + 48) == ARMOR[3].list, "W then Space picks the class above (MEDIUM, this armor's own, so its own pieces)")
-	open_class(); tap(W); tap(W); tap(W); tap(SPACE)
-	check(weights(ARMOR[3]):find("^0:2%.0%.0") ~= nil and find_text(surface(), "LIGHT") ~= nil, "from ORIGINAL up three to LIGHT")
+	open_class(); local odd = find_text(surface(), "67"); click_at(odd.x + 10, odd.y + 2); point_at(1500, 200); run(3)
+	check(weights(ARMOR[3]) == "0:2.0.0.abcd 4.0.0.abcd 7.0.1.abcd 2.2.0.abcd 9.0.3.abcd | 1:2.0.0.abcd 4.0.0.abcd 7.0.1.abcd 2.2.0.abcd 9.0.3.abcd"
+		and find_text(surface(), "ARMOR RATING 67") ~= nil, "an odd rating: slot 7 raised first, slots 2 and 4 light")
+	open_class(); odd = find_text(surface(), "133"); click_at(odd.x + 10, odd.y + 2); point_at(1500, 200); run(3)
+	check(weights(ARMOR[3]):find("^0:2%.0%.2%.abcd 4%.0%.1%.abcd 7%.0%.2") ~= nil, "133: two of three rated slots heavy, the last (slot 4) medium")
+	open_class(); heavy = find_text(surface(), "150"); click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
+	-- keyboard in the rating grid (50, 67, 83, 100, 133, 150, ORIGINAL), starting on 150
+	open_class(); tap(W); tap(W); tap(SPACE)
+	check(not class_open() and r64(ARMOR[3].at + 48) == ARMOR[3].list, "W W then Space picks two above (100, this armor's own, so its own pieces)")
+	open_class(); tap(W); tap(W); tap(W); tap(W); tap(W); tap(W); tap(SPACE)
+	check(weights(ARMOR[3]):find("^0:2%.0%.0") ~= nil and find_text(surface(), "ARMOR RATING 50") ~= nil, "from ORIGINAL up six to 50")
 	open_class(); tap(W); tap(SPACE)
 	check(r64(ARMOR[3].at + 48) == ARMOR[3].list, "W wraps from the top to ORIGINAL at the bottom")
 	open_class(); tap(S); tap(D); tap(SPACE)
@@ -544,24 +554,24 @@ else
 	print("an armor that mixes weights")
 	w32(payload + 0x12c, ARMOR[2].id); point_at(1500, 200); run(40)
 	check(r64(ARMOR[3].at + 48) == ARMOR[3].list, "the class pick is dropped once another armor is worn")
-	check(find_text(surface(), "ORIGINAL") ~= nil, "class box shows ORIGINAL for its own mixed pieces")
+	check(find_text(surface(), "ARMOR RATING 75") ~= nil, "class box shows the rating its own mixed pieces make (one medium of two rated)")
 	open_class()
-	check(find_text(surface(), "ORIGINAL") and find_text(surface(), "MEDIUM"), "the same four choices")
-	local m = find_text(surface(), "MEDIUM"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(find_text(surface(), "ORIGINAL (75)") and find_text(surface(), "75") and find_text(surface(), "125") and not find_text(surface(), "67"), "choices in steps of 25 for two rated slots")
+	local m = find_text(surface(), "100"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
 	check(weights(ARMOR[2]):find("^0:2%.0%.1%.abcd 4%.0%.1%.abcd 6%.2%.3") ~= nil, "a pick evens out the mix, the non-armor piece untouched")
-	open_class(); m = find_text(surface(), "ORIGINAL"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	open_class(); m = find_text(surface(), "ORIGINAL (75)"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[2].at + 48) == ARMOR[2].list, "ORIGINAL puts its own pieces back")
 	print("a body list changed by something else")
 	local foreign = alloc(48); ffi.copy(ffi.cast("void *", foreign), ffi.cast("void *", ARMOR[2].list), 48); wptr(ARMOR[2].at + 48, foreign)
 	run(3); check(find_text(surface(), "?") ~= nil, "class box shows the class as unknown")
-	open_class(); m = find_text(surface(), "HEAVY"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	open_class(); m = find_text(surface(), "150"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[2].at + 48) == foreign and log_text():find("body list was changed by something else", 1, true), "left alone, and the log says so")
 	wptr(ARMOR[2].at + 48, ARMOR[2].list)
 	print("a record whose body list pointer crosses a cache line")
 	w32(payload + 0x12c, ARMOR[1].id); point_at(1500, 200); run(40)
-	open_class(); m = find_text(surface(), "HEAVY"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	open_class(); m = find_text(surface(), "150"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("CLASS WRITE FAILED on FS-37 Ravager: crosses a cache line", 1, true), "refused, and the log says why")
-	check((ARMOR[2].at + 48) % 8 == 4 and log_text():find("CLASS FS-55 Devastator: ORIGINAL -> MEDIUM", 1, true), "a record only 4-byte aligned (armor 2) still took its picks")
+	check((ARMOR[2].at + 48) % 8 == 4 and log_text():find("CLASS FS-55 Devastator: ARMOR RATING 75 -> ARMOR RATING 100", 1, true), "a record only 4-byte aligned (armor 2) still took its picks")
 	print("dragging the class box")
 	w32(payload + 0x12c, ARMOR[3].id); point_at(1500, 200); run(40)
 	local function drag2(x, y, dx, dy)
@@ -569,7 +579,7 @@ else
 		point_at(x + dx / 2, y + dy / 2); run(2); point_at(x + dx, y + dy); run(2); mouse.down = false; run(3)
 	end
 	drag2(55 + CBX + 40, 366 + BY + 13, 0, 40)
-	cbox = find_text(surface(), "MEDIUM")
+	cbox = find_text(surface(), "ARMOR RATING 100")
 	check(not class_open() and cbox and cbox.y > 366 + BY + 40, "a drag moves the class box and does not open its grid")
 	local h = assert(io.open(LOGDIR .. NAME .. ".cfg")); local ct = h:read("*a"); h:close()
 	check(ct:find("class_dx = -207\r\n", 1, true) and ct:find("class_dy = 40\r\n", 1, true) and ct:find("box_x = " .. BX .. "\r\n", 1, true), "its spot from the passive box is saved, the passive box stays")
@@ -793,7 +803,7 @@ end
 
 if mode == nil or mode == "" then   -- leave armor 3 heavy, for shutdown to put back
 	click_at(55 + CBX + 40, 366 + BY + 13)
-	local h = find_text(surface(), "HEAVY")
+	local h = find_text(surface(), "150")
 	click_at(h.x + 10, h.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[3].at + 48) ~= ARMOR[3].list, "armor 3 left heavy before shutdown")
 end

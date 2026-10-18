@@ -1,13 +1,14 @@
 -- HD2-Addon: mods/jarvis/passive_picker
--- Passive Picker, test build 0.25, for Bingus Shared Loader v15+.
+-- Passive Picker, test build 0.27, for Bingus Shared Loader v15+.
 --
--- Picks the armor class (light, medium, heavy) and the passive of the armor
+-- Picks the armor rating (50 light to 150 heavy) and the passive of the armor
 -- worn on the pre-mission loadout screen, from two clickable boxes of the same
 -- width that split your player card evenly (equal gaps at both edges and
 -- between them): the class box on the left, the passive box on the right, on
 -- the MISSION STRATAGEMS line (on the Equipment page, where that line gives way
 -- to the gear tiles, above the STRATAGEMS button). Each box opens its own grid:
--- LIGHT, MEDIUM, HEAVY and ORIGINAL (the armor's own pieces), or the passives
+-- the ratings (50, 64, 70, 79, 100, 129, 150, as near as the armor's pieces
+-- allow) and ORIGINAL (the armor's own pieces), or the passives
 -- you own. The look of the armor is never touched. While a grid is
 -- open the highlight moves with the mouse or with W/A/S/D, and Space or a
 -- click picks and closes it.
@@ -18,11 +19,15 @@
 -- in the armor's record (what the menus show and what a later equip copies)
 -- and the passive in the game's "what this player is wearing" cache (what the
 -- mission uses).
--- A class pick never edits the game's own data. The armor's record points at
+-- A rating pick never edits the game's own data. The armor's record points at
 -- its body pieces, and every piece carries a weight (0 light, 1 medium,
--- 2 heavy) from which the game works out armor rating, speed and stamina. The
--- mod copies those pieces once per armor and class, sets every armor piece's
--- weight in the copy, and swaps the record's 8-byte pointer to the copy (read
+-- 2 heavy). The pieces in slots 2, 4, 5, 6, 7, 8 and 9 make the rating:
+-- 50 + 50 x their average weight (slots 1 and 3 count for nothing), and speed
+-- and stamina follow it. That is how the odd stock ratings come about: 64 and
+-- 79 are two and four medium pieces out of seven, 129 is three medium and four
+-- heavy. The mod copies the pieces once per armor and rating, sets the weights
+-- in the copy (slots 6, 7, 8, 9 raised first, then 2, 4, 5, the way the stock
+-- odd armors have them), and swaps the record's 8-byte pointer to the copy (read
 -- back). Copies are kept for the whole session and never freed, so the game
 -- can never read freed memory. Records are put back when the game shuts down.
 -- A pick belongs to the armor being worn: once another armor is worn, the one
@@ -67,7 +72,7 @@
 --                    card+0x1b820 (used as the anchor for the box)
 
 if rawget(_G, "JarvisPassivePicker") then return true end
-local REVISION = "Passive Picker test 0.25"
+local REVISION = "Passive Picker test 0.27"
 local state = { revision = REVISION, frames = 0, status = "starting" }
 rawset(_G, "JarvisPassivePicker", state)
 
@@ -479,16 +484,23 @@ end
 
 -- ------------------------------------------------------------------ catalog
 -- An armor's body list as the game left it: its pointer, and its bodies with
--- their pieces copied out. class = the one weight every armor piece carries
--- (0 light, 1 medium, 2 heavy), or nil when the stock pieces mix weights.
-local CLASS_NAMES = { [0] = "LIGHT", [1] = "MEDIUM", [2] = "HEAVY" }
-local function class_name(c) return CLASS_NAMES[c] or "MIXED" end
+-- their pieces copied out. rated = the rating slots it has, in the order they
+-- are raised; class = its stock rating.
+-- Rating = 50 + 50 x the average weight of the pieces in the rated slots
+-- (checked against every armor's listed rating, 2026-10-18).
+local RATED = { 6, 7, 8, 9, 2, 4, 5 }
+local RATINGS = { 50, 64, 70, 79, 100, 129, 150 }
+local function class_name(c) return c == "own" and "ORIGINAL" or c and tostring(c) or "?" end
+local function round(x) return math.floor(x + 0.5) end
+-- weight units (one per step up from light) for rating r on this armor, and the rating k units give
+local function units(st, r) return math.max(0, math.min(2 * #st.rated, round((r - 50) * #st.rated / 50))) end
+local function rating_of(st, k) return round(50 + 50 * k / #st.rated) end
 
 local function read_bodies(at)
 	local list, n = ptr(at + 48), u32(at + 56)
 	if not list or n < 1 or n > 8 or u32(at + 60) ~= 0 then return nil, "body list rejected" end
 	if not readable(list, n * 24) then return nil, "body list unreadable" end
-	local bodies, class, mixed, torso = {}, nil, false, false
+	local bodies, slots, torso = {}, {}, false
 	for b = 0, n - 1 do
 		local head = list + b * 24
 		local pieces, count = ptr(head + 8), u32(head + 16)
@@ -501,15 +513,21 @@ local function read_bodies(at)
 			local slot, kind, weight = u32(p + 8), u32(p + 12), u32(p + 16)
 			if slot > 9 or kind > 2 or weight > 3 then return nil, "piece fields rejected" end
 			if kind == 0 and weight <= 2 then
-				body.armor[#body.armor + 1] = i
+				body.armor[#body.armor + 1] = { i, slot }
 				if slot == 2 then torso = true end
-				if class == nil then class = weight elseif class ~= weight then mixed = true end
+				slots[slot] = math.max(slots[slot] or 0, weight)
 			end
 		end
 		bodies[#bodies + 1] = body
 	end
 	if not torso then return nil, "no torso piece" end
-	return { list = list, count = n, bodies = bodies, class = not mixed and class or nil }
+	local rated, sum = {}, 0
+	for _, slot in ipairs(RATED) do
+		if slots[slot] then rated[#rated + 1] = slot sum = sum + slots[slot] end
+	end
+	local st = { list = list, count = n, bodies = bodies, rated = rated }
+	st.class = rating_of(st, sum)
+	return st
 end
 
 local records = nil   -- item id -> { at, passive }
@@ -539,7 +557,7 @@ local function read_catalog()
 			local stock, why = read_bodies(at)
 			if stock then
 				rec.stock = stock
-				classes[stock.class or "mixed"] = (classes[stock.class or "mixed"] or 0) + 1
+				classes[stock.class] = (classes[stock.class] or 0) + 1
 			else
 				noclass = noclass + 1
 				log(string.format("  note: %s has no class change (%s)", default.n, why))
@@ -551,8 +569,11 @@ local function read_catalog()
 	end
 	log(string.format("catalog: %d kits, %d body armors recognised, %d other kits, %d armors differ from reference",
 		n, armors, unknown, changed))
-	log(string.format("classes: %d light, %d medium, %d heavy, %d mixed, %d unreadable",
-		classes[0] or 0, classes[1] or 0, classes[2] or 0, classes.mixed or 0, noclass))
+	local counts = {}
+	for r, k in pairs(classes) do counts[#counts + 1] = { r, k } end
+	table.sort(counts, function (a, b) return a[1] < b[1] end)
+	for i, v in ipairs(counts) do counts[i] = v[1] .. " x" .. v[2] end
+	log(string.format("ratings: %s, %d unreadable", table.concat(counts, ", "), noclass))
 	return out
 end
 
@@ -686,7 +707,7 @@ local function set_passive(rec, enum)
 end
 
 -- ------------------------------------------------------------------ class change
--- The armor's class right now: 0, 1 or 2 for one of this mod's copies, "own"
+-- The armor's rating right now: the rating of one of this mod's copies, "own"
 -- for the game's own body list, nil when something else swapped it.
 local function class_now(rec)
 	if not rec.stock then return nil end
@@ -698,17 +719,21 @@ end
 
 -- What the box shows for a class value.
 local function class_text(rec, c)
-	if c == "own" then return rec.stock and CLASS_NAMES[rec.stock.class] or "ORIGINAL" end
+	if c == "own" then return rec.stock and ("ARMOR RATING " .. rec.stock.class) or "ORIGINAL" end
 	if c == nil then return "?" end
-	return class_name(c)
+	return "ARMOR RATING " .. c
 end
 
--- The armor's pieces with every armor piece at weight c, built once per armor
--- and class and kept until the game closes.
+-- The armor's pieces weighted for rating c, built once per armor and rating
+-- and kept until the game closes. k units go out one step at a time over the
+-- rated slots in order, all to medium first, then on to heavy; the pieces in
+-- slots 1 and 3 keep their own weight.
 local function class_copy(rec, c)
 	rec.copies = rec.copies or {}
 	if rec.copies[c] then return rec.copies[c] end
 	local st = rec.stock
+	local n, k, want = #st.rated, units(st, c), {}
+	for j, slot in ipairs(st.rated) do want[slot] = (j <= k and 1 or 0) + (j <= k - n and 1 or 0) end
 	local list = ffi.new("uint64_t[?]", st.count * 3)
 	local keep = { list }
 	local lp = ffi.cast("uint8_t *", list)
@@ -716,7 +741,9 @@ local function class_copy(rec, c)
 		local pieces = ffi.new("uint64_t[?]", body.count * 12)
 		local pp = ffi.cast("uint8_t *", pieces)
 		ffi.copy(pp, body.raw, #body.raw)
-		for _, i in ipairs(body.armor) do ffi.cast("uint32_t *", pp + i * 96 + 16)[0] = c end
+		for _, a in ipairs(body.armor) do
+			if want[a[2]] then ffi.cast("uint32_t *", pp + a[1] * 96 + 16)[0] = want[a[2]] end
+		end
 		keep[#keep + 1] = pieces
 		ffi.copy(lp + (b - 1) * 24, body.head, 24)
 		ffi.cast("uint64_t *", lp + (b - 1) * 24 + 8)[0] = ffi.cast("uintptr_t", pp)
@@ -726,9 +753,11 @@ local function class_copy(rec, c)
 	return copy
 end
 
--- c = 0, 1 or 2, or "own" for the armor's own pieces. One 8-byte write.
+-- c = a rating, or "own" for the armor's own pieces. One 8-byte write. A
+-- rating the armor's pieces cannot make goes to the nearest one they can.
 local function set_class(rec, c)
 	if not rec.stock then log(rec.name .. ": no class change for this armor") return end
+	if c ~= "own" then c = rating_of(rec.stock, units(rec.stock, c)) end
 	if c == rec.stock.class then c = "own" end
 	local before = class_now(rec)
 	if before == nil then log(rec.name .. ": body list was changed by something else; class left alone") return end
@@ -780,7 +809,7 @@ end
 -- A class pick from the grid. The cache entry is logged around it, to show
 -- whether the game keeps anything of the class there.
 local function apply_class(rec, c)
-	log(string.format("PICK %s: class %s", rec.name, class_name(c)))
+	log(string.format("PICK %s: rating %s", rec.name, class_name(c)))
 	local read, before = pcall(read_cache)
 	set_class(rec, c)
 	local again, after = pcall(read_cache)
@@ -793,7 +822,7 @@ end
 -- ------------------------------------------------------------------ hard set
 -- Classes and passives kept on an armor until changed by hand, saved to a
 -- file and written back into the armor records at every game start.
--- saved[item] = { p = passive or nil for its own, c = 0/1/2 or nil for its own }
+-- saved[item] = { p = passive or nil for its own, c = a rating or nil for its own }
 local SAVED = DIR .. "PassivePicker.saved"
 local saved = {}
 local sync_dead = false
@@ -802,8 +831,8 @@ local function write_saved()
 	pcall(function ()
 		local f = io.open(SAVED, "wb")
 		if not f then log("hard set: the saved file could not be written") return end
-		f:write("# Passive Picker: class and passive hard set on an armor.\r\n")
-		f:write("# armor id = passive number, class (0 light, 1 medium, 2 heavy, - its own)\r\n")
+		f:write("# Passive Picker: rating and passive hard set on an armor.\r\n")
+		f:write("# armor id = passive number, armor rating (50 to 150, - its own)\r\n")
 		f:write("# Written when the hard-set key is pressed. With the game closed, delete a\r\n")
 		f:write("# line, or this file, to give an armor its own class and passive back.\r\n")
 		local items = {}
@@ -814,7 +843,7 @@ local function write_saved()
 			local v = saved[item]
 			local p = v.p or (rec and rec.default) or 0
 			f:write(string.format("%.0f = %d, %s   # %s: %s, %s\r\n", item, p, v.c and tostring(v.c) or "-",
-				rec and rec.name or "?", passive_name(p), v.c and class_name(v.c) or "own class"))
+				rec and rec.name or "?", passive_name(p), v.c and ("rating " .. v.c) or "own rating"))
 		end
 		f:close()
 	end)
@@ -826,8 +855,10 @@ local function load_saved()
 	local text = f:read("*a") or ""
 	f:close()
 	for line in text:gmatch("[^\r\n]+") do
-		local item, enum, c = line:match("^%s*(%d+)%s*=%s*(%d+)%s*,?%s*([012%-]?)")
+		local item, enum, c = line:match("^%s*(%d+)%s*=%s*(%d+)%s*,?%s*([%d%-]*)")
 		item, enum, c = tonumber(item), tonumber(enum), tonumber(c)
+		-- a file from 1.1.0 kept the class: 0 light, 1 medium, 2 heavy
+		if c and c <= 2 then c = 50 + 50 * c end
 		if item and enum and PASSIVE_NAMES[enum] then saved[item] = { p = enum, c = c } end
 	end
 end
@@ -835,6 +866,7 @@ end
 -- Drops what equals the armor's own, so an entry only holds real changes.
 local function trim(rec, v)
 	if v.p == rec.default then v.p = nil end
+	if v.c ~= nil and rec.stock then v.c = rating_of(rec.stock, units(rec.stock, v.c)) end
 	if v.c ~= nil and (not rec.stock or v.c == rec.stock.class) then v.c = nil end
 	return (v.p or v.c ~= nil) and v or nil
 end
@@ -1124,11 +1156,19 @@ local function grid_list(rec)
 	return list
 end
 
--- The class choices: the three classes, and ORIGINAL (the armor's own
--- pieces). Empty for an armor whose body list could not be read.
+-- The rating choices: the stock ratings, each as near as this armor's pieces
+-- can make it (an armor with fewer rated slots has coarser steps), and
+-- ORIGINAL (the armor's own pieces). Empty for an armor whose body list could
+-- not be read.
 local function class_list(rec)
 	if not rec.stock then return {} end
-	return { 0, 1, 2, "own" }
+	local out, seen = {}, {}
+	for _, r in ipairs(RATINGS) do
+		local v = rating_of(rec.stock, units(rec.stock, r))
+		if not seen[v] then seen[v] = true out[#out + 1] = v end
+	end
+	out[#out + 1] = "own"
+	return out
 end
 
 -- Screen rectangles for the two boxes (passive and class) and, when one is
@@ -1316,7 +1356,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 		local grid = lay.grid
 		rect(grid, color(0, 0, 0, cfg.grid_alpha))
 		outline(grid, gold, t)
-		local title = lay.open == "class" and "ARMOR CLASS   W S + SPACE"
+		local title = lay.open == "class" and "ARMOR RATING   W S + SPACE"
 			or "ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE"
 		text(title, { x = grid.x, y = grid.y + grid.h - TITLE_H * s, w = grid.w, h = TITLE_H * s }, 12 * s, muted, 6 * s)
 		for _, cell in ipairs(lay.cells) do
@@ -1324,7 +1364,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 			local on, label
 			if cell.class ~= nil then
 				on = cell.class == class
-				label = cell.class == "own" and "ORIGINAL" or class_name(cell.class)
+				label = cell.class == "own" and ("ORIGINAL (" .. rec.stock.class .. ")") or tostring(cell.class)
 			else
 				on = cell.enum == current
 				label = passive_name(cell.enum)

@@ -2,9 +2,9 @@
 
 Helldivers 2 mod by **vibeslacker**. Made with AI: the code was written by an AI and tested in the game by a human.
 
-Pick which of your owned armor passives goes on the armor you are wearing, and its class (light, medium, heavy), from two small boxes on the player card of the pre-mission loadout screen. The look stays the same. F6 keeps both on that armor across armor changes and game restarts.
+Pick which of your owned armor passives goes on the armor you are wearing, and its armor rating (50 to 150, including the odd stock ones: 64, 70, 79, 129), from two small boxes on the player card of the pre-mission loadout screen. The look stays the same. F6 keeps both on that armor across armor changes and game restarts.
 
-A class change swaps one 8-byte pointer: the armor's record (+48) points at its body pieces, each carrying a weight (0 light, 1 medium, 2 heavy) the game works armor rating, speed and stamina out of. The mod copies the pieces once per armor and class with every armor piece set to the chosen weight, points the record at the copy, and never writes or frees the game's own pieces. Kit records are only 4-byte aligned, so the write is allowed only inside one 64-byte cache line. Layout learned from HD2 Transmog 0.2.2; `tools/probe_classes.py` reads it read-only from the running game.
+A rating change swaps one 8-byte pointer: the armor's record (+48) points at its body pieces, each carrying a weight (0 light, 1 medium, 2 heavy). Rating = 50 + 50 x the average weight of the armor pieces in slots 2, 4, 5, 6, 7, 8 and 9 (slots 1 and 3 count for nothing); speed and stamina follow it. This reproduces every stock armor's rating. The mod copies the pieces once per armor and rating with the weights set for that rating (slots 6, 7, 8, 9 raised first, then 2, 4, 5, as the stock odd armors do), points the record at the copy, and never writes or frees the game's own pieces. Kit records are only 4-byte aligned, so the write is allowed only inside one 64-byte cache line. Layout learned from HD2 Transmog 0.2.2; `tools/probe_classes.py` reads it read-only from the running game.
 
 - **Download:** the zip under [Releases](../../releases), or on [Nexus Mods](https://www.nexusmods.com/helldivers2/mods/17393).
 - **Needs:** [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader) v15 or newer, loaded last.
