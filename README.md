@@ -2,7 +2,9 @@
 
 Helldivers 2 mod by **vibeslacker**. Made with AI: the code was written by an AI and tested in the game by a human.
 
-Pick which of your owned armor passives goes on the armor you are wearing, from a small box on the player card of the pre-mission loadout screen. F6 keeps it on that armor across armor changes and game restarts.
+Pick which of your owned armor passives goes on the armor you are wearing, and its class (light, medium, heavy), from two small boxes on the player card of the pre-mission loadout screen. The look stays the same. F6 keeps both on that armor across armor changes and game restarts.
+
+A class change swaps one 8-byte pointer: the armor's record (+48) points at its body pieces, each carrying a weight (0 light, 1 medium, 2 heavy) the game works armor rating, speed and stamina out of. The mod copies the pieces once per armor and class with every armor piece set to the chosen weight, points the record at the copy, and never writes or frees the game's own pieces. Kit records are only 4-byte aligned, so the write is allowed only inside one 64-byte cache line. Layout learned from HD2 Transmog 0.2.2; `tools/probe_classes.py` reads it read-only from the running game.
 
 - **Download:** the zip under [Releases](../../releases), or on [Nexus Mods](https://www.nexusmods.com/helldivers2/mods/17393).
 - **Needs:** [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader) v15 or newer, loaded last.

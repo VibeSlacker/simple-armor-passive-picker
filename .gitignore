@@ -9,3 +9,4 @@ release/*.zip
 release/DIVERKIT-BUG-REPORT.txt
 release/PERMISSIONS-AND-MESSAGES.md
 release/NEXUS-PAGE-DRAFT.md
+install-*/

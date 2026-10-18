@@ -41,9 +41,11 @@ end
 -- the public build is published under another name, so its files and its global carry that name
 local NAME = #sigs == 8 and "SimpleArmorPassivePicker" or "PassivePicker"
 -- default spot of the box on the loadout page (the public build starts above the EQUIPMENT button)
-local BX, BY = #sigs == 8 and 127 or 248, #sigs == 8 and 54 or -44
--- the box label is centered: where a label starts inside the 166-wide box at the default text size
-local function TX(value) return (166 - #value * (#sigs == 8 and 15 or 13) * 0.55) / 2 end
+local BX, BY = 213, #sigs == 8 and 54 or -44
+-- the box label is centered: where a label starts inside the 201-wide box at the default text size
+local function TX(value) return (201 - #value * (#sigs == 8 and 15 or 13) * 0.55) / 2 end
+-- the class box: as wide as the passive box, on the left half of the card (6 from each edge, 6 between)
+local CBX = BX - 207
 
 local IMAGE = 0x200000
 local image = alloc(IMAGE)
@@ -108,11 +110,46 @@ do
 end
 
 -- catalog (also the customization manager) with three armors
-local ARMOR = { { id = 530315896, p = 6 }, { id = 3544585106, p = 3 }, { id = 3672418116, p = 8 } }
+-- each armor's body list: two bodies (types 0 and 1), pieces as { slot, kind, weight }
+-- armor 1 is light, armor 2 mixes weights, armor 3 (worn) is medium
+local ARMOR = {
+	{ id = 530315896, p = 6, pieces = { { 2, 0, 0 }, { 4, 0, 0 }, { 5, 0, 0 }, { 2, 1, 0 } } },
+	{ id = 3544585106, p = 3, pieces = { { 2, 0, 1 }, { 4, 0, 0 }, { 6, 2, 3 } } },
+	{ id = 3672418116, p = 8, pieces = { { 2, 0, 1 }, { 4, 0, 1 }, { 7, 0, 1 }, { 2, 2, 0 }, { 9, 0, 3 } } },
+}
 local catalog = alloc(0x1000)
 local kits = alloc(8 * #ARMOR)
 for i, a in ipairs(ARMOR) do
-	a.at = alloc(64); w32(a.at, a.id); w32(a.at + 28, a.p); wptr(kits + (i - 1) * 8, a.at)
+	-- like the game's, records are only 4-byte aligned: armor 2 sits at 4 past an 8-byte boundary, and
+	-- armor 1 so that its body list pointer (+48) straddles a cache line
+	local room = alloc(256)
+	local want = i == 1 and 12 or i == 2 and 4 or 0
+	a.at = room + (want - room % 64) % 64
+	w32(a.at, a.id); w32(a.at + 28, a.p); wptr(kits + (i - 1) * 8, a.at)
+	a.list = alloc(48)
+	for b = 0, 1 do
+		local pieces = alloc(96 * #a.pieces)
+		for k, piece in ipairs(a.pieces) do
+			local at = pieces + (k - 1) * 96
+			w32(at, 0x1000 + k); w32(at + 8, piece[1]); w32(at + 12, piece[2]); w32(at + 16, piece[3]); w32(at + 40, 0xabcd)
+		end
+		w32(a.list + b * 24, b); wptr(a.list + b * 24 + 8, pieces); w32(a.list + b * 24 + 16, #a.pieces)
+	end
+	wptr(a.at + 48, a.list); w32(a.at + 56, 2)
+end
+local function r64(a) return tonumber(ffi.cast("uint64_t *", a)[0]) end
+-- the weights an armor's record points at now: { body1 = {w, w, ...}, body2 = ... } and its kinds and slots
+local function weights(a)
+	local list, out = r64(a.at + 48), {}
+	for b = 0, r32(a.at + 56) - 1 do
+		local pieces, n, ws = r64(list + b * 24 + 8), r32(list + b * 24 + 16), {}
+		for k = 0, n - 1 do
+			local at = pieces + k * 96
+			ws[#ws + 1] = string.format("%d.%d.%d.%x", r32(at + 8), r32(at + 12), r32(at + 16), r32(at + 40))
+		end
+		out[#out + 1] = r32(list + b * 24) .. ":" .. table.concat(ws, " ")
+	end
+	return table.concat(out, " | ")
 end
 wptr(catalog, kits); w32(catalog + 8, #ARMOR)
 wptr(slot_of.armor_catalog, catalog)
@@ -235,9 +272,10 @@ os.remove(LOGDIR .. NAME .. ".cfg")
 os.remove(LOGDIR .. NAME .. ".saved")
 local function saved_text() local f = io.open(LOGDIR .. NAME .. ".saved"); if not f then return "" end local t = f:read("*a"); f:close(); return t end
 if mode == "saved" then
-	-- a saved file from an earlier run: armor 3 kept on FORTIFIED, plus rubbish and an armor that does not exist
+	-- a saved file from an earlier run: armor 3 kept on FORTIFIED and heavy, armor 1 on its own passive but medium
+	-- (an older line without a class), plus rubbish and an armor that does not exist
 	local f = assert(io.open(LOGDIR .. NAME .. ".saved", "w"))
-	f:write("# old\r\n3672418116 = 3   # x\r\nnonsense\r\n3672418116 = 999\r\n12345 = 6\r\n530315896 = 6\r\n"); f:close()
+	f:write("# old\r\n3672418116 = 3, 2   # x\r\nnonsense\r\n3672418116 = 999\r\n12345 = 6\r\n530315896 = 6\r\n3544585106 = 3, -\r\n"); f:close()
 end
 do   -- a log from the session before, and a stale one from the session before that
 	local f = assert(io.open(LOGDIR .. NAME .. ".log", "w")); f:write("OLD SESSION\n"); f:close()
@@ -288,8 +326,10 @@ elseif mode == "saved" then
 	check(r32(ARMOR[3].at + 28) == 3, "saved passive written into the armor record at start")
 	check(r32(ARMOR[1].at + 28) == 6 and r32(ARMOR[2].at + 28) == 3, "other armors untouched")
 	check(r32(cache + 0x3c) == 3, "worn armor's saved passive pushed to the player cache")
-	check(text:find("hard set: 1 armor(s) given their saved passive", 1, true), "log counts one armor")
-	check(find_text(surface(), "FORTIFIED [SET]") ~= nil, "box marks the passive as set")
+	check(text:find("hard set: 1 armor(s) given their saved class and passive", 1, true), "log counts one armor")
+	check(weights(ARMOR[3]):find("^0:2%.0%.2%.abcd 4%.0%.2") ~= nil and r64(ARMOR[1].at + 48) == ARMOR[1].list and r64(ARMOR[2].at + 48) == ARMOR[2].list,
+		"saved class written at start, other armors keep their own")
+	check(find_text(surface(), "FORTIFIED [SET]") ~= nil and find_text(surface(), "HEAVY [SET]") ~= nil, "both boxes mark what is set")
 	keys[0x78] = true; run(2); keys[0x78] = nil; run(40)
 	check(r32(ARMOR[3].at + 28) == 3 and r32(cache + 0x3c) == 3, "F9 does nothing any more")
 	click_at(55 + BX + 80, 366 + BY + 14)
@@ -298,7 +338,14 @@ elseif mode == "saved" then
 	check(r32(ARMOR[3].at + 28) == 8 and r32(cache + 0x3c) == 8, "a grid pick of the armor's own passive puts record and cache back")
 	check(find_text(surface(), "SERVO-ASSISTED") ~= nil, "box drops the mark")
 	keys[0x75] = true; run(2); keys[0x75] = nil; run(2)
-	check(not saved_text():find("3672418116", 1, true), "F6 on the armor's own passive forgets the saved one")
+	check(saved_text():find("3672418116 = 8, 2", 1, true), "F6 with only the class changed saves the class")
+	check(find_text(surface(), "HEAVY [SET]") ~= nil and find_text(surface(), "SERVO-ASSISTED") ~= nil, "the class box keeps its mark, the passive box has none")
+	click_at(55 + CBX + 40, 366 + BY + 13)
+	own = find_text(surface(), "ORIGINAL")
+	click_at(own.x + 10, own.y + 2); point_at(1500, 200); run(3)
+	keys[0x75] = true; run(2); keys[0x75] = nil; run(2)
+	check(not saved_text():find("3672418116", 1, true), "F6 on the armor's own class and passive forgets the saved one")
+	check(not saved_text():find("3544585106", 1, true), "an entry with nothing changed is dropped")
 	check(saved_text():find("12345 = 6", 1, true), "an entry for an armor this game does not have is kept")
 	check(not saved_text():find("530315896", 1, true), "an entry equal to the armor's own passive is dropped")
 elseif mode == "nofont" then
@@ -365,6 +412,20 @@ else
 	check(log_text():find("cache not written: it holds armor", 1, true), "and the log says so")
 	w32(cache + 12, ARMOR[3].id)
 
+	print("a settings file from before the class box")
+	do
+		local f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w"))
+		f:write("# Passive Picker: where the box and the grid sit on the player card.\r\nbox_x = 133\r\nbox_y = " .. BY .. "\r\nbox_w = 166\r\neq_box_x = 134\r\ngrid_alpha = 99\r\n"); f:close()
+		point_at(1500, 200); run(130)
+		local h = assert(io.open(LOGDIR .. NAME .. ".cfg")); local t = h:read("*a"); h:close()
+		check(t:find("box_x = 213\r\n", 1, true) and t:find("box_w = 201\r\n", 1, true) and t:find("eq_box_x = 213\r\n", 1, true) and t:find("class_w = 201\r\n", 1, true),
+			"box spots reset once and the file rewritten with the class box")
+		check(t:find("grid_alpha = 99\r\n", 1, true) and log_text():find("settings: file from before the class box", 1, true), "other settings kept, and the log says so")
+		local label = find_text(surface(), "MEDIUM")
+		check(label and math.abs(label.x - (55 + 6 + TX("MEDIUM"))) < 1.5, "the boxes split the card")
+		f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
+	end
+
 	print("settings re-read live")
 	local f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w"))
 	f:write("# moved\r\nbox_x = 10\r\nbox_y = -100\r\ngrid_cols = 9\r\nnonsense = 4\r\n"); f:close()
@@ -386,7 +447,7 @@ else
 		run(3)
 		g = surface()
 		label = find_text(g, "ENGINEERING KIT")
-		check(label and find_text(g, "PASSIVE") == nil and #g.texts == 1, case[1] .. ": the box and nothing else, no square button")
+		check(label and find_text(g, "PASSIVE") == nil and #g.texts == 2 and find_text(g, "LIGHT") ~= nil, case[1] .. ": the two boxes and nothing else, no square button")
 		check(label and label.x > 55 + BX and label.x < 55 + 420 and label.y > 366 + BY and label.y < 366 + BY + 26,
 			case[1] .. ": box on the MISSION STRATAGEMS line")
 		click_at(55 + 380, 366 + 174)
@@ -434,6 +495,90 @@ else
 	check(not is_open(), "nothing opens while the window is not focused")
 	point_at(1500, 200); run(3)
 
+	print("class box and its grid")
+	-- armor 3 (medium) worn, passive FORTIFIED
+	local STOCK3 = weights(ARMOR[3])
+	local CTITLE = "ARMOR CLASS   W S + SPACE"
+	local function class_open() return find_text(surface(), CTITLE) ~= nil end
+	local function open_class() click_at(55 + CBX + 40, 366 + BY + 13); point_at(1500, 200); run(3) end
+	local cbox = find_text(surface(), "MEDIUM")
+	check(cbox and math.abs(cbox.x - (55 + 6 + TX("MEDIUM"))) < 1.5 and cbox.y > 366 + BY and cbox.y < 366 + BY + 26, "class box on the left half of the card, showing the armor's class")
+	local pbox = find_text(surface(), "FORTIFIED")
+	check(pbox and math.abs(pbox.x - (55 + 213 + TX("FORTIFIED"))) < 1.5 and math.abs(pbox.y - cbox.y) < 0.5, "passive box on the right half, on the same line")
+	do
+		local lay = picker.test.layout({ x = 55, y = 366, w = 420, h = 42 }, {}, 1920, 1080, nil, nil, { 0, 1, 2, "own" })
+		local c, b = lay.cbox, lay.box
+		check(c.w == b.w and math.abs((c.x - 55) - 6) < 0.01 and math.abs(b.x - (c.x + c.w) - 6) < 0.01 and math.abs((55 + 420) - (b.x + b.w) - 6) < 0.01,
+			"the two boxes are the same width with equal gaps at both edges and between them")
+	end
+	check(find_text(surface(), "FORTIFIED") ~= nil, "the passive box shows the passive alone")
+	open_class()
+	check(class_open() and find_text(surface(), "LIGHT") and find_text(surface(), "MEDIUM") and find_text(surface(), "HEAVY") and find_text(surface(), "ORIGINAL"), "class grid: light, medium, heavy and original")
+	check(not find_text(surface(), "MEDIUM *"), "no star marks")
+	check(find_text(surface(), "ENGINEERING KIT") == nil and not is_open(), "no passives in it")
+	local heavy = find_text(surface(), "HEAVY")
+	click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
+	check(not class_open() and find_text(surface(), "HEAVY") ~= nil and find_text(surface(), "FORTIFIED") ~= nil, "a class pick closes the grid, the boxes show HEAVY and the same passive")
+	check(weights(ARMOR[3]) == "0:2.0.2.abcd 4.0.2.abcd 7.0.2.abcd 2.2.0.abcd 9.0.3.abcd | 1:2.0.2.abcd 4.0.2.abcd 7.0.2.abcd 2.2.0.abcd 9.0.3.abcd",
+		"every armor piece heavy in both bodies; other kinds, the none weight and all other bytes untouched")
+	local list_heavy = r64(ARMOR[3].at + 48)
+	check(list_heavy ~= ARMOR[3].list and r32(ARMOR[3].at + 56) == 2, "the record points at a copy, body count unchanged")
+	check(log_text():find("CLASS SA-25 Steel Trooper: MEDIUM -> HEAVY", 1, true) and log_text():find("  cache before ", 1, true), "log shows the change and the cache around it")
+	check(r32(ARMOR[3].at + 28) == 3 and r32(r64(ARMOR[3].list + 8) + 16) == 1, "the passive and the game's own pieces are untouched")
+	open_class(); click_at(55 + BX + 80, 366 + BY + 14); point_at(1500, 200); run(3)
+	check(is_open() and not class_open(), "a click on the passive box switches to the passive grid")
+	click_at(1500, 200)
+	open_class(); local own = find_text(surface(), "ORIGINAL"); click_at(own.x + 10, own.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[3].at + 48) == ARMOR[3].list and weights(ARMOR[3]) == STOCK3, "the armor's own class puts its own body list back")
+	open_class(); heavy = find_text(surface(), "HEAVY"); click_at(heavy.x + 10, heavy.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[3].at + 48) == list_heavy, "the same copy is used again")
+	-- keyboard in the class grid (LIGHT, MEDIUM, HEAVY, ORIGINAL), starting on HEAVY
+	open_class(); tap(W); tap(SPACE)
+	check(not class_open() and r64(ARMOR[3].at + 48) == ARMOR[3].list, "W then Space picks the class above (MEDIUM, this armor's own, so its own pieces)")
+	open_class(); tap(W); tap(W); tap(W); tap(SPACE)
+	check(weights(ARMOR[3]):find("^0:2%.0%.0") ~= nil and find_text(surface(), "LIGHT") ~= nil, "from ORIGINAL up three to LIGHT")
+	open_class(); tap(W); tap(SPACE)
+	check(r64(ARMOR[3].at + 48) == ARMOR[3].list, "W wraps from the top to ORIGINAL at the bottom")
+	open_class(); tap(S); tap(D); tap(SPACE)
+	check(weights(ARMOR[3]):find("^0:2%.0%.0") ~= nil, "S wraps from the bottom to the top, D stays in the one column")
+	print("an armor that mixes weights")
+	w32(payload + 0x12c, ARMOR[2].id); point_at(1500, 200); run(40)
+	check(r64(ARMOR[3].at + 48) == ARMOR[3].list, "the class pick is dropped once another armor is worn")
+	check(find_text(surface(), "ORIGINAL") ~= nil, "class box shows ORIGINAL for its own mixed pieces")
+	open_class()
+	check(find_text(surface(), "ORIGINAL") and find_text(surface(), "MEDIUM"), "the same four choices")
+	local m = find_text(surface(), "MEDIUM"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(weights(ARMOR[2]):find("^0:2%.0%.1%.abcd 4%.0%.1%.abcd 6%.2%.3") ~= nil, "a pick evens out the mix, the non-armor piece untouched")
+	open_class(); m = find_text(surface(), "ORIGINAL"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[2].at + 48) == ARMOR[2].list, "ORIGINAL puts its own pieces back")
+	print("a body list changed by something else")
+	local foreign = alloc(48); ffi.copy(ffi.cast("void *", foreign), ffi.cast("void *", ARMOR[2].list), 48); wptr(ARMOR[2].at + 48, foreign)
+	run(3); check(find_text(surface(), "?") ~= nil, "class box shows the class as unknown")
+	open_class(); m = find_text(surface(), "HEAVY"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[2].at + 48) == foreign and log_text():find("body list was changed by something else", 1, true), "left alone, and the log says so")
+	wptr(ARMOR[2].at + 48, ARMOR[2].list)
+	print("a record whose body list pointer crosses a cache line")
+	w32(payload + 0x12c, ARMOR[1].id); point_at(1500, 200); run(40)
+	open_class(); m = find_text(surface(), "HEAVY"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("CLASS WRITE FAILED on FS-37 Ravager: crosses a cache line", 1, true), "refused, and the log says why")
+	check((ARMOR[2].at + 48) % 8 == 4 and log_text():find("CLASS FS-55 Devastator: ORIGINAL -> MEDIUM", 1, true), "a record only 4-byte aligned (armor 2) still took its picks")
+	print("dragging the class box")
+	w32(payload + 0x12c, ARMOR[3].id); point_at(1500, 200); run(40)
+	local function drag2(x, y, dx, dy)
+		point_at(x, y); mouse.down = false; run(2); mouse.down = true; run(2)
+		point_at(x + dx / 2, y + dy / 2); run(2); point_at(x + dx, y + dy); run(2); mouse.down = false; run(3)
+	end
+	drag2(55 + CBX + 40, 366 + BY + 13, 0, 40)
+	cbox = find_text(surface(), "MEDIUM")
+	check(not class_open() and cbox and cbox.y > 366 + BY + 40, "a drag moves the class box and does not open its grid")
+	local h = assert(io.open(LOGDIR .. NAME .. ".cfg")); local ct = h:read("*a"); h:close()
+	check(ct:find("class_dx = -207\r\n", 1, true) and ct:find("class_dy = 40\r\n", 1, true) and ct:find("box_x = " .. BX .. "\r\n", 1, true), "its spot from the passive box is saved, the passive box stays")
+	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
+	click_at(55 + BX + 80, 366 + BY + 14)
+	cell = find_text(surface(), "FORTIFIED")
+	click_at(cell.x + 20, cell.y + 2); point_at(1500, 200); run(3)
+	check(r32(ARMOR[3].at + 28) == 3 and r64(ARMOR[3].at + 48) == ARMOR[3].list, "back to armor 3 on FORTIFIED, its own class")
+
 	print("keeping the keys from the game")
 	check(log_text():find("input: consume function at game.dll+0x", 1, true), "consume function found and checked")
 	check(#consumed > 0, "it was called during the grid tests above")
@@ -478,11 +623,11 @@ else
 	print("Equipment page")
 	wf(widget + 156, 373); run(12)
 	label = find_text(surface(), "ENGINEERING KIT")
-	check(label and label.x > 55 + 128 and label.x < 55 + 128 + 166, "box centered over the armor tile")
+	check(label and label.x > 55 + 213 and label.x < 55 + 213 + 201, "passive box on the right half of the card")
 	check(label and label.y > 373 + 46 and label.y < 373 + 46 + 26, "box sits above the STRATAGEMS button")
 	click_at(55 + 328, 373 - 30)
 	check(find_text(surface(), "FORTIFIED") == nil, "a click where the box used to sit does nothing")
-	click_at(55 + 128 + 83, 373 + 46 + 13)
+	click_at(55 + 213 + 100, 373 + 46 + 13)
 	check(find_text(surface(), "FORTIFIED") ~= nil, "click on the moved box opens the grid")
 	click_at(1500, 200)
 	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("eq_box_x = 10\r\neq_box_y = 100\r\n"); f:close()
@@ -518,7 +663,7 @@ else
 	check(find_text(surface(), "FORTIFIED") == nil, "a drag on the box does not open the grid")
 	check(label and math.abs(label.x - (55 + BX + TX("ENGINEERING KIT") + 120)) < 1.5 and label.y > 366 + BY + 80, "the box is dropped where the mouse let go")
 	check(cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true) and cfg_file():find("box_y = " .. (BY + 80) .. "\r\n", 1, true), "its new spot is saved in the settings file")
-	check(cfg_file():find("eq_box_x = 128\r\n", 1, true), "the Equipment-page spot is not touched")
+	check(cfg_file():find("eq_box_x = 213\r\n", 1, true), "the Equipment-page spot is not touched")
 	run(130)
 	label = find_text(surface(), "ENGINEERING KIT")
 	check(label and math.abs(label.x - (55 + BX + TX("ENGINEERING KIT") + 120)) < 1.5, "it stays there after the settings are read again")
@@ -533,8 +678,8 @@ else
 	click_at(cell.x + 20, cell.y + 2)
 	check(r32(ARMOR[1].at + 28) == 3, "a pick still works in the moved grid")
 	wf(widget + 156, 373); run(12)
-	drag(55 + 128 + 83, 373 + 46 + 13, -40, 30)
-	check(cfg_file():find("eq_box_x = 88\r\n", 1, true) and cfg_file():find("eq_box_y = 76\r\n", 1, true) and cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true),
+	drag(55 + 213 + 100, 373 + 46 + 13, -40, 30)
+	check(cfg_file():find("eq_box_x = 173\r\n", 1, true) and cfg_file():find("eq_box_y = 76\r\n", 1, true) and cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true),
 		"on the Equipment page the drag moves that page's spot only")
 	wf(widget + 156, 366); run(12)
 	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("drag = 0\r\n"); f:close(); point_at(1500, 200); run(130)
@@ -585,7 +730,7 @@ else
 	w32(payload + 0x12c, ARMOR[3].id); point_at(1500, 200); run(3); own_pick()
 	check(r32(ARMOR[3].at + 28) == 8, "starting from the armor's own passive")
 	press(F6)
-	check(saved_text() == "" and log_text():find("has its own passive, nothing to save", 1, true), "F6 on an unchanged armor saves nothing")
+	check(saved_text() == "" and log_text():find("has its own class and passive, nothing to save", 1, true), "F6 on an unchanged armor saves nothing")
 	click_at(55 + BX + 80, 366 + BY + 14)
 	cell = find_text(surface(), "FORTIFIED")
 	click_at(cell.x + 20, cell.y + 2); point_at(1500, 200); run(3)
@@ -646,12 +791,20 @@ else
 	w32(manager + 0x62a0, 1); w32(owner + 8, 1); run(12)
 end
 
+if mode == nil or mode == "" then   -- leave armor 3 heavy, for shutdown to put back
+	click_at(55 + CBX + 40, 366 + BY + 13)
+	local h = find_text(surface(), "HEAVY")
+	click_at(h.x + 10, h.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[3].at + 48) ~= ARMOR[3].list, "armor 3 left heavy before shutdown")
+end
 print("shutdown")
 rawget(_G, "shutdown")()
 local _, left = surface()
 check(shut, "the game's own shutdown still ran")
 check(left == 0, "surface removed")
 check(r32(ARMOR[1].at + 28) == 6 and r32(ARMOR[2].at + 28) == 3 and r32(ARMOR[3].at + 28) == 8, "every record back to its own passive")
+check(r64(ARMOR[1].at + 48) == ARMOR[1].list and r64(ARMOR[2].at + 48) == ARMOR[2].list and r64(ARMOR[3].at + 48) == ARMOR[3].list,
+	"every record back on its own body list")
 if public and (mode == nil or mode == "") then
 	print("public build: no card redraw")
 	w32(owner + 8, 1); w32(manager + 0x62a0, 1); w32(payload + 0x12c, ARMOR[3].id); point_at(1500, 200); run(80)

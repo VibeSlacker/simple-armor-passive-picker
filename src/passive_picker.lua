@@ -1,24 +1,34 @@
 -- HD2-Addon: mods/jarvis/passive_picker
--- Passive Picker, test build 0.23, for Bingus Shared Loader v15+.
+-- Passive Picker, test build 0.25, for Bingus Shared Loader v15+.
 --
--- Finds the armor records, the armors and passives you own, and the armor worn
--- on the pre-mission loadout screen, and draws a clickable box on your player
--- card showing the worn armor's passive, at the right end of the MISSION
--- STRATAGEMS line. On the Equipment page (where that line gives way to the
--- gear tiles) the box sits above the STRATAGEMS button instead, centered over
--- the armor tile. A click opens a grid of the passives you own; a pick lands
--- on the worn armor (skin and stats untouched). While the grid is open the
--- highlight moves with the mouse or with W/A/S/D, and Space or a click picks.
+-- Picks the armor class (light, medium, heavy) and the passive of the armor
+-- worn on the pre-mission loadout screen, from two clickable boxes of the same
+-- width that split your player card evenly (equal gaps at both edges and
+-- between them): the class box on the left, the passive box on the right, on
+-- the MISSION STRATAGEMS line (on the Equipment page, where that line gives way
+-- to the gear tiles, above the STRATAGEMS button). Each box opens its own grid:
+-- LIGHT, MEDIUM, HEAVY and ORIGINAL (the armor's own pieces), or the passives
+-- you own. The look of the armor is never touched. While a grid is
+-- open the highlight moves with the mouse or with W/A/S/D, and Space or a
+-- click picks and closes it.
 -- While it is open the game's own menu is kept from hearing those keys, by
 -- calling the game's "consume input" function (the one call this mod makes
 -- into game code; block_keys = 0 in the settings file turns it off).
--- A pick makes two 4-byte writes, both read back: the passive number in the
--- armor's record (what the menus show and what a later equip copies) and the
--- passive in the game's "what this player is wearing" cache (what the mission
--- uses). Records are put back when the game shuts down.
+-- A passive pick makes two 4-byte writes, both read back: the passive number
+-- in the armor's record (what the menus show and what a later equip copies)
+-- and the passive in the game's "what this player is wearing" cache (what the
+-- mission uses).
+-- A class pick never edits the game's own data. The armor's record points at
+-- its body pieces, and every piece carries a weight (0 light, 1 medium,
+-- 2 heavy) from which the game works out armor rating, speed and stamina. The
+-- mod copies those pieces once per armor and class, sets every armor piece's
+-- weight in the copy, and swaps the record's 8-byte pointer to the copy (read
+-- back). Copies are kept for the whole session and never freed, so the game
+-- can never read freed memory. Records are put back when the game shuts down.
 -- A pick belongs to the armor being worn: once another armor is worn, the one
--- left behind goes back to its own passive, or to its hard-set one. Away from
--- the loadout screen (the ship's Armory) the worn armor is read from that cache.
+-- left behind goes back to its own class and passive, or to its hard-set ones.
+-- Away from the loadout screen (the ship's Armory) the worn armor is read from
+-- the player cache.
 -- The box and the grid can be dragged with the left mouse button (the grid by
 -- its title line or any empty part); where they are dropped is saved in the
 -- settings file. The box keeps one spot for the loadout page and one for the
@@ -29,9 +39,10 @@
 -- skip its frame; its panel stays drawn) and a click here cannot also press one
 -- of its buttons. hold_diverkit = 0 in the settings file turns that off.
 -- Hard set: F6 on the loadout screen (set_key in the settings file) keeps the
--- worn armor's current passive on that armor from then on, across game starts,
--- by saving it in Logs/PassivePicker.saved and writing it back at every start.
--- F6 while the armor has its own passive again forgets the saved one.
+-- worn armor's current class and passive on that armor from then on, across
+-- game starts, by saving them in Logs/PassivePicker.saved and writing them back
+-- at every start. F6 while the armor has its own class and passive again
+-- forgets the saved ones.
 --@PERSONAL_BEGIN@
 -- Card redraw (personal build only, left out of the public build): when the
 -- worn items change under a card that stayed on screen (a DiverKit preset
@@ -45,14 +56,18 @@
 --           card is on screen, so it can be tuned without a restart)
 --
 -- How the game stores it (learned from HD2 Transmog 0.2.2 and DiverKit):
---   armor catalog -> array of 64-byte kit records: item id at +0, passive at +28
+--   armor catalog -> array of 64-byte kit records: item id at +0, passive at
+--                    +28, body list at +48 (pointer, body count, zero)
+--   body list     -> 24-byte bodies: type at +0, piece list pointer at +8,
+--                    piece count at +16
+--   piece         -> 96 bytes: slot at +8, kind at +12 (0 = armor), weight at +16
 --   progression   -> owned entries (24 bytes each) pointing at 184-byte states
 --   loadout owner -> per-slot payload with the worn armor id at +0x12c
 --   player card   -> one of four at owner+0x53a78, EQUIPMENT button widget at
 --                    card+0x1b820 (used as the anchor for the box)
 
 if rawget(_G, "JarvisPassivePicker") then return true end
-local REVISION = "Passive Picker test 0.23"
+local REVISION = "Passive Picker test 0.25"
 local state = { revision = REVISION, frames = 0, status = "starting" }
 rawset(_G, "JarvisPassivePicker", state)
 
@@ -147,23 +162,31 @@ local function need(a, n, what)
 end
 
 -- ------------------------------------------------------------------ writing
--- The one write this mod makes: a 4-byte value, read back afterwards.
+-- The writes this mod makes: a 4-byte value (a passive) or an 8-byte pointer
+-- (a body list), read back afterwards. The game's kit records are only 4-byte
+-- aligned, so an 8-byte write is allowed anywhere inside one 64-byte cache line
+-- (where x86 writes it in one piece, so no reader sees half of it), never
+-- across two.
 local oldprot, tmpprot = ffi.new("uint32_t[1]"), ffi.new("uint32_t[1]")
-local function put32(a, v)
+local function put(a, v, n)
 	local _, _, ok, prot = query(a)
-	if not ok or not readable(a, 4) then return false, "unreadable" end
+	if not ok or not readable(a, n) then return false, "unreadable" end
+	if a % 4 ~= 0 then return false, "not aligned" end
+	if a % 64 + n > 64 then return false, "crosses a cache line" end
 	local unlocked = false
 	if prot ~= 0x04 then
-		if kernel.VirtualProtect(ffi.cast("void *", a), 4, 0x04, oldprot) == 0 then
+		if kernel.VirtualProtect(ffi.cast("void *", a), n, 0x04, oldprot) == 0 then
 			return false, "page protection " .. tostring(prot) .. " could not be opened"
 		end
 		unlocked = true
 	end
-	ffi.cast("uint32_t *", a)[0] = v
-	if unlocked then kernel.VirtualProtect(ffi.cast("void *", a), 4, oldprot[0], tmpprot) end
-	if u32(a) ~= v then return false, "read-back differs" end
+	if n == 8 then ffi.cast("uint64_t *", a)[0] = v else ffi.cast("uint32_t *", a)[0] = v end
+	if unlocked then kernel.VirtualProtect(ffi.cast("void *", a), n, oldprot[0], tmpprot) end
+	if (n == 8 and ptr(a) or u32(a)) ~= v then return false, "read-back differs" end
 	return true, unlocked and ("page protection was " .. tostring(prot)) or "plain writable page"
 end
+local function put32(a, v) return put(a, v, 4) end
+local function put64(a, v) return put(a, v, 8) end
 
 -- ------------------------------------------------------------------ keys
 local pidbox = ffi.new("uint32_t[1]")
@@ -360,7 +383,7 @@ local function resolve_input()
 end
 
 -- Keeps the game's menus from hearing the menu keys this frame. Any doubt
--- turns the feature off for the session; the passive window keeps working.
+-- turns the feature off for the session; the grid keeps working.
 local block = { dead = false, frames = 0, said = false }
 local function block_keys()
 	if block.dead or not input then return end
@@ -370,7 +393,7 @@ local function block_keys()
 		need(holder, 0x340, "input singleton")
 		for _, action in ipairs(MENU_ACTIONS) do native.consume(input.fn, holder, action) end
 		block.frames = block.frames + 1
-		if not block.said then block.said = true; log(string.format("input: blocking the game's menu keys while the passive window is open (singleton 0x%X)", holder)) end
+		if not block.said then block.said = true; log(string.format("input: blocking the game's menu keys while the grid is open (singleton 0x%X)", holder)) end
 	end)
 	if not ok then
 		block.dead = true
@@ -455,6 +478,40 @@ end
 --@PERSONAL_END@
 
 -- ------------------------------------------------------------------ catalog
+-- An armor's body list as the game left it: its pointer, and its bodies with
+-- their pieces copied out. class = the one weight every armor piece carries
+-- (0 light, 1 medium, 2 heavy), or nil when the stock pieces mix weights.
+local CLASS_NAMES = { [0] = "LIGHT", [1] = "MEDIUM", [2] = "HEAVY" }
+local function class_name(c) return CLASS_NAMES[c] or "MIXED" end
+
+local function read_bodies(at)
+	local list, n = ptr(at + 48), u32(at + 56)
+	if not list or n < 1 or n > 8 or u32(at + 60) ~= 0 then return nil, "body list rejected" end
+	if not readable(list, n * 24) then return nil, "body list unreadable" end
+	local bodies, class, mixed, torso = {}, nil, false, false
+	for b = 0, n - 1 do
+		local head = list + b * 24
+		local pieces, count = ptr(head + 8), u32(head + 16)
+		if not pieces or count < 1 or count > 20 or u32(head + 20) ~= 0 then return nil, "body rejected" end
+		if not readable(pieces, count * 96) then return nil, "pieces unreadable" end
+		local body = { head = ffi.string(ffi.cast("const char *", head), 24), count = count,
+			raw = ffi.string(ffi.cast("const char *", pieces), count * 96), armor = {} }
+		for i = 0, count - 1 do
+			local p = pieces + i * 96
+			local slot, kind, weight = u32(p + 8), u32(p + 12), u32(p + 16)
+			if slot > 9 or kind > 2 or weight > 3 then return nil, "piece fields rejected" end
+			if kind == 0 and weight <= 2 then
+				body.armor[#body.armor + 1] = i
+				if slot == 2 then torso = true end
+				if class == nil then class = weight elseif class ~= weight then mixed = true end
+			end
+		end
+		bodies[#bodies + 1] = body
+	end
+	if not torso then return nil, "no torso piece" end
+	return { list = list, count = n, bodies = bodies, class = not mixed and class or nil }
+end
+
 local records = nil   -- item id -> { at, passive }
 local function read_catalog()
 	local catalog = ptr(need(globals.armor_catalog, 8, "armor catalog slot"))
@@ -464,6 +521,7 @@ local function read_catalog()
 	if not first or n < 1 or n > 2048 then return nil, "armor catalog empty or out of bounds" end
 	need(first, n * 8, "kit slots")
 	local out, armors, changed, unknown = {}, 0, 0, 0
+	local classes, noclass = {}, 0
 	for i = 0, n - 1 do
 		local at = ptr(first + i * 8)
 		if not at then error("kit pointer missing", 0) end
@@ -477,13 +535,24 @@ local function read_catalog()
 				log(string.format("  note: %s holds %s, reference says %s", default.n,
 					passive_name(passive), passive_name(default.p)))
 			end
-			out[item] = { at = at, item = item, passive = passive, name = default.n, default = default.p }
+			local rec = { at = at, item = item, passive = passive, name = default.n, default = default.p }
+			local stock, why = read_bodies(at)
+			if stock then
+				rec.stock = stock
+				classes[stock.class or "mixed"] = (classes[stock.class or "mixed"] or 0) + 1
+			else
+				noclass = noclass + 1
+				log(string.format("  note: %s has no class change (%s)", default.n, why))
+			end
+			out[item] = rec
 		else
 			unknown = unknown + 1
 		end
 	end
 	log(string.format("catalog: %d kits, %d body armors recognised, %d other kits, %d armors differ from reference",
 		n, armors, unknown, changed))
+	log(string.format("classes: %d light, %d medium, %d heavy, %d mixed, %d unreadable",
+		classes[0] or 0, classes[1] or 0, classes[2] or 0, classes.mixed or 0, noclass))
 	return out
 end
 
@@ -616,16 +685,81 @@ local function set_passive(rec, enum)
 	end
 end
 
+-- ------------------------------------------------------------------ class change
+-- The armor's class right now: 0, 1 or 2 for one of this mod's copies, "own"
+-- for the game's own body list, nil when something else swapped it.
+local function class_now(rec)
+	if not rec.stock then return nil end
+	local list = ptr(rec.at + 48)
+	if list == rec.stock.list then return "own" end
+	for c, copy in pairs(rec.copies or {}) do if copy.list == list then return c end end
+	return nil
+end
+
+-- What the box shows for a class value.
+local function class_text(rec, c)
+	if c == "own" then return rec.stock and CLASS_NAMES[rec.stock.class] or "ORIGINAL" end
+	if c == nil then return "?" end
+	return class_name(c)
+end
+
+-- The armor's pieces with every armor piece at weight c, built once per armor
+-- and class and kept until the game closes.
+local function class_copy(rec, c)
+	rec.copies = rec.copies or {}
+	if rec.copies[c] then return rec.copies[c] end
+	local st = rec.stock
+	local list = ffi.new("uint64_t[?]", st.count * 3)
+	local keep = { list }
+	local lp = ffi.cast("uint8_t *", list)
+	for b, body in ipairs(st.bodies) do
+		local pieces = ffi.new("uint64_t[?]", body.count * 12)
+		local pp = ffi.cast("uint8_t *", pieces)
+		ffi.copy(pp, body.raw, #body.raw)
+		for _, i in ipairs(body.armor) do ffi.cast("uint32_t *", pp + i * 96 + 16)[0] = c end
+		keep[#keep + 1] = pieces
+		ffi.copy(lp + (b - 1) * 24, body.head, 24)
+		ffi.cast("uint64_t *", lp + (b - 1) * 24 + 8)[0] = ffi.cast("uintptr_t", pp)
+	end
+	local copy = { list = tonumber(ffi.cast("uintptr_t", lp)), keep = keep }
+	rec.copies[c] = copy
+	return copy
+end
+
+-- c = 0, 1 or 2, or "own" for the armor's own pieces. One 8-byte write.
+local function set_class(rec, c)
+	if not rec.stock then log(rec.name .. ": no class change for this armor") return end
+	if c == rec.stock.class then c = "own" end
+	local before = class_now(rec)
+	if before == nil then log(rec.name .. ": body list was changed by something else; class left alone") return end
+	if before == c then return end
+	local list = c == "own" and rec.stock.list or class_copy(rec, c).list
+	local ok, how = put64(rec.at + 48, list)
+	if ok then
+		touched[rec.item] = rec
+		log(string.format("CLASS %s: %s -> %s (%s)", rec.name, class_text(rec, before), class_text(rec, c), how))
+	else
+		log(string.format("CLASS WRITE FAILED on %s: %s; left as %s", rec.name, how, class_text(rec, class_now(rec))))
+	end
+end
+
 local function restore_all()
 	for _, rec in pairs(touched) do
-		if readable(rec.at, 64) and u32(rec.at) == rec.item and u32(rec.at + 28) ~= rec.default then
-			put32(rec.at + 28, rec.default)
+		if readable(rec.at, 64) and u32(rec.at) == rec.item then
+			if u32(rec.at + 28) ~= rec.default then put32(rec.at + 28, rec.default) end
+			local c = class_now(rec)
+			if c ~= nil and c ~= "own" then put64(rec.at + 48, rec.stock.list) end
 		end
 	end
 	touched = {}
 end
 
--- A pick from the grid: the record, then the player cache.
+-- The player cache entry as hex, for the log (what the game copied at equip).
+local function cache_hex(c)
+	return ffi.string(ffi.cast("const char *", c.at), 68):gsub(".", function (ch) return string.format("%02x", ch:byte()) end)
+end
+
+-- A passive pick from the grid: the record, then the player cache.
 local function apply_pick(rec, enum)
 	log(string.format("PICK %s: %s", rec.name, passive_name(enum)))
 	set_passive(rec, enum)
@@ -643,9 +777,23 @@ local function apply_pick(rec, enum)
 		or ("CACHE WRITE FAILED: " .. tostring(how)))
 end
 
+-- A class pick from the grid. The cache entry is logged around it, to show
+-- whether the game keeps anything of the class there.
+local function apply_class(rec, c)
+	log(string.format("PICK %s: class %s", rec.name, class_name(c)))
+	local read, before = pcall(read_cache)
+	set_class(rec, c)
+	local again, after = pcall(read_cache)
+	if read and before and again and after then
+		log("  cache before " .. cache_hex(before))
+		log("  cache after  " .. cache_hex(after))
+	end
+end
+
 -- ------------------------------------------------------------------ hard set
--- Passives kept on an armor until changed by hand: armor id -> passive, saved
--- to a file and written back into the armor records at every game start.
+-- Classes and passives kept on an armor until changed by hand, saved to a
+-- file and written back into the armor records at every game start.
+-- saved[item] = { p = passive or nil for its own, c = 0/1/2 or nil for its own }
 local SAVED = DIR .. "PassivePicker.saved"
 local saved = {}
 local sync_dead = false
@@ -654,15 +802,19 @@ local function write_saved()
 	pcall(function ()
 		local f = io.open(SAVED, "wb")
 		if not f then log("hard set: the saved file could not be written") return end
-		f:write("# Passive Picker: passives hard set on an armor (armor id = passive number).\r\n")
+		f:write("# Passive Picker: class and passive hard set on an armor.\r\n")
+		f:write("# armor id = passive number, class (0 light, 1 medium, 2 heavy, - its own)\r\n")
 		f:write("# Written when the hard-set key is pressed. With the game closed, delete a\r\n")
-		f:write("# line, or this file, to give an armor its own passive back.\r\n")
+		f:write("# line, or this file, to give an armor its own class and passive back.\r\n")
 		local items = {}
 		for item in pairs(saved) do items[#items + 1] = item end
 		table.sort(items)
 		for _, item in ipairs(items) do
 			local rec = records and records[item]
-			f:write(string.format("%.0f = %d   # %s: %s\r\n", item, saved[item], rec and rec.name or "?", passive_name(saved[item])))
+			local v = saved[item]
+			local p = v.p or (rec and rec.default) or 0
+			f:write(string.format("%.0f = %d, %s   # %s: %s, %s\r\n", item, p, v.c and tostring(v.c) or "-",
+				rec and rec.name or "?", passive_name(p), v.c and class_name(v.c) or "own class"))
 		end
 		f:close()
 	end)
@@ -674,28 +826,41 @@ local function load_saved()
 	local text = f:read("*a") or ""
 	f:close()
 	for line in text:gmatch("[^\r\n]+") do
-		local item, enum = line:match("^%s*(%d+)%s*=%s*(%d+)")
-		item, enum = tonumber(item), tonumber(enum)
-		if item and enum and PASSIVE_NAMES[enum] then saved[item] = enum end
+		local item, enum, c = line:match("^%s*(%d+)%s*=%s*(%d+)%s*,?%s*([012%-]?)")
+		item, enum, c = tonumber(item), tonumber(enum), tonumber(c)
+		if item and enum and PASSIVE_NAMES[enum] then saved[item] = { p = enum, c = c } end
 	end
 end
 
--- At game start: every saved passive goes back into its armor's record.
+-- Drops what equals the armor's own, so an entry only holds real changes.
+local function trim(rec, v)
+	if v.p == rec.default then v.p = nil end
+	if v.c ~= nil and (not rec.stock or v.c == rec.stock.class) then v.c = nil end
+	return (v.p or v.c ~= nil) and v or nil
+end
+
+-- At game start: every saved class and passive goes back into its record.
 local function apply_saved()
 	load_saved()
 	local count = 0
-	for item, enum in pairs(saved) do
+	for item, v in pairs(saved) do
 		local rec = records[item]
-		if rec and enum == rec.default then saved[item] = nil
-		elseif rec then set_passive(rec, enum); count = count + 1 end
+		if rec then
+			saved[item] = trim(rec, v)
+			if saved[item] then
+				if v.p then set_passive(rec, v.p) end
+				if v.c then set_class(rec, v.c) end
+				count = count + 1
+			end
+		end
 	end
-	log(string.format("hard set: %d armor(s) given their saved passive", count))
+	log(string.format("hard set: %d armor(s) given their saved class and passive", count))
 end
 
 -- The player cache may have been filled before the record was written (the
 -- armor worn at game start), so the worn armor's saved passive is pushed there.
 local function sync_saved(rec)
-	local enum = saved[rec.item]
+	local enum = saved[rec.item] and saved[rec.item].p
 	if sync_dead or not enum or u32(rec.at + 28) ~= enum then return end
 	local read, c = pcall(read_cache)
 	if not read or not c or c.armor ~= rec.item or c.passive == enum then return end
@@ -706,38 +871,58 @@ end
 
 -- A pick is for the armor being worn. Once another armor is seen worn (on the
 -- loadout screen, or in the player cache while that screen is closed), every
--- other armor this mod changed goes back to its hard-set passive, or to its
--- own when it has none.
+-- other armor this mod changed goes back to its hard-set class and passive, or
+-- to its own when it has none.
 local worn_item = nil
 local function revert_others(rec)
 	if worn_item == rec.item then return end
 	worn_item = rec.item
+	-- the stock pieces of each armor worn, once: slot.kind.weight per piece, per body type
+	if rec.stock and not rec.logged then
+		rec.logged = true
+		local parts = {}
+		for _, body in ipairs(rec.stock.bodies) do
+			local p = {}
+			for i = 0, body.count - 1 do
+				local raw = body.raw:sub(i * 96 + 9, i * 96 + 20)
+				p[#p + 1] = string.format("%d.%d.%d", raw:byte(1), raw:byte(5), raw:byte(9))
+			end
+			parts[#parts + 1] = string.format("type %d: %s", body.head:byte(1), table.concat(p, " "))
+		end
+		log(string.format("PIECES %s (%s): %s", rec.name, class_name(rec.stock.class), table.concat(parts, " | ")))
+	end
 	for item, other in pairs(touched) do
-		local want = saved[item] or other.default
-		if item ~= rec.item and readable(other.at, 64) and u32(other.at) == item and u32(other.at + 28) ~= want then
-			local before = u32(other.at + 28)
-			local ok, how = put32(other.at + 28, want)
-			log(ok and string.format("REVERT %s: %s -> %s (another armor is worn, %s)", other.name, passive_name(before), passive_name(want), how)
-				or string.format("REVERT FAILED on %s: %s; left as %s", other.name, tostring(how), passive_name(u32(other.at + 28))))
+		local v = saved[item] or {}
+		local want = v.p or other.default
+		if item ~= rec.item and readable(other.at, 64) and u32(other.at) == item then
+			if u32(other.at + 28) ~= want then
+				local before = u32(other.at + 28)
+				local ok, how = put32(other.at + 28, want)
+				log(ok and string.format("REVERT %s: %s -> %s (another armor is worn, %s)", other.name, passive_name(before), passive_name(want), how)
+					or string.format("REVERT FAILED on %s: %s; left as %s", other.name, tostring(how), passive_name(u32(other.at + 28))))
+			end
+			local c = v.c == nil and "own" or v.c
+			if other.stock and class_now(other) ~= c then set_class(other, c) end
 		end
 	end
 end
 
--- The hard-set key: keep what the worn armor has now, or forget the saved
--- passive when the armor has its own again.
+-- The hard-set key: keep the worn armor's class and passive as they are now,
+-- or forget the saved ones when the armor has its own again.
 local function hard_set(rec)
-	local current = u32(rec.at + 28)
-	if current ~= rec.default then
-		saved[rec.item] = current
+	local c = class_now(rec)
+	local v = trim(rec, { p = u32(rec.at + 28), c = (c ~= "own") and c or nil })
+	if v then
+		saved[rec.item] = v
 		write_saved()
-		log(string.format("HARD SET %s: %s", rec.name, passive_name(current)))
+		log(string.format("HARD SET %s: %s, %s", rec.name, class_text(rec, c), passive_name(u32(rec.at + 28))))
 		sync_saved(rec)
 	elseif saved[rec.item] then
 		saved[rec.item] = nil
 		write_saved()
-		log(string.format("HARD SET cleared on %s: back to its own %s", rec.name, passive_name(rec.default)))
+		log(string.format("HARD SET cleared on %s: back to its own class and passive", rec.name))
 	else
-		log("hard set: " .. rec.name .. " has its own passive, nothing to save")
+		log("hard set: " .. rec.name .. " has its own class and passive, nothing to save")
 	end
 end
 
@@ -746,25 +931,29 @@ end
 -- lower-left corner of the EQUIPMENT button; x goes right, y goes up.
 local CFG = DIR .. "PassivePicker.cfg"
 local SETTINGS = {
-	{ "box_x", 248, "box: left edge" },
-	{ "box_y", -44, "box: bottom edge (negative = below the EQUIPMENT button)" },
-	{ "box_w", 166, "box: width" },
-	{ "box_h", 26, "box: height" },
-	{ "box_text", 13, "box: text size" },
+	{ "box_x", 213, "passive box: left edge (213 = right half of the card)" },
+	{ "box_y", -44, "passive box: bottom edge (negative = below the EQUIPMENT button)" },
+	{ "box_w", 201, "passive box: width" },
+	{ "class_w", 201, "class box: width" },
+	{ "class_dx", -207, "class box: left edge, from the passive box's left edge (-207 = the left half of the card, the same gap as at the edges)" },
+	{ "class_dy", 0, "class box: bottom edge, from the passive box's bottom edge" },
+	{ "box_h", 26, "both boxes: height" },
+	{ "box_text", 13, "both boxes: text size" },
 	{ "equip_y", 370, "the Equipment page is showing when the button sits at or above this screen height (366 on the loadout page, 373 on the Equipment page)" },
-	{ "eq_box_x", 128, "box on the Equipment page: left edge (128 = centered over the armor tile)" },
-	{ "eq_box_y", 46, "box on the Equipment page: bottom edge (46 = just above the STRATAGEMS button)" },
+	{ "eq_box_x", 213, "passive box on the Equipment page: left edge (213 = right half of the card)" },
+	{ "eq_box_y", 46, "passive box on the Equipment page: bottom edge (46 = just above the STRATAGEMS button)" },
 	{ "grid_x", 0, "grid: left edge" },
 	{ "grid_y", 274, "grid: bottom edge (274 = just above DiverKit's 15-slot panel)" },
 	{ "grid_cols", 2, "grid: columns (1 to 4)" },
 	{ "cell_w", 210, "grid: width of one passive" },
+	{ "class_cell_w", 210, "class grid: width" },
 	{ "cell_h", 17, "grid: height of one passive" },
 	{ "grid_text", 12, "grid: text size" },
 	{ "box_alpha", 215, "box: how solid its black background is (0 = see-through, 255 = solid)" },
 	{ "grid_alpha", 238, "grid: how solid its black background is (0 = see-through, 255 = solid)" },
-	{ "set_key", 117, "hard-set key, as a Windows key number (117 = F6, 116 = F5, 118 = F7, 0 = off): keeps the worn armor's current passive on that armor across game starts" },
+	{ "set_key", 117, "hard-set key, as a Windows key number (117 = F6, 116 = F5, 118 = F7, 0 = off): keeps the worn armor's current class and passive on that armor across game starts" },
 	{ "drag", 1, "1 = the box and the grid can be dragged with the left mouse button and the new spot is saved here, 0 = locked in place" },
-	{ "hold_diverkit", 1, "1 = DiverKit ignores the mouse while it is on the passive box or the grid is open (so a click here cannot press a DiverKit button underneath), 0 = off" },
+	{ "hold_diverkit", 1, "1 = DiverKit ignores the mouse while it is on a box or a grid is open (so a click here cannot press a DiverKit button underneath), 0 = off" },
 --@PERSONAL_BEGIN@
 	{ "redraw", 1, "1 = redraw the player card after a loadout preset switch so it shows the new items without flipping pages, 0 = off" },
 --@PERSONAL_END@
@@ -785,7 +974,7 @@ local function parse_cfg(text)
 	out.set_key = math.max(0, math.min(255, math.floor(out.set_key)))
 	out.box_alpha = math.max(0, math.min(255, math.floor(out.box_alpha)))
 	out.grid_alpha = math.max(0, math.min(255, math.floor(out.grid_alpha)))
-	for _, key in ipairs({ "box_w", "box_h", "box_text", "cell_w", "cell_h", "grid_text" }) do
+	for _, key in ipairs({ "box_w", "box_h", "box_text", "cell_w", "cell_h", "grid_text", "class_w", "class_cell_w" }) do
 		out[key] = math.max(6, out[key])
 	end
 	return out
@@ -796,7 +985,7 @@ local function write_cfg(values)
 	pcall(function ()
 		local w = io.open(CFG, "wb")
 		if not w then return end
-		w:write("# Passive Picker: where the box and the grid sit on the player card.\r\n")
+		w:write("# Passive Picker: where the boxes and the grids sit on the player card.\r\n")
 		w:write("# Card units (the card is 420 wide), from the lower-left corner of the\r\n")
 		w:write("# EQUIPMENT button; x goes right, y goes up. Read again every 2 seconds\r\n")
 		w:write("# while the card is on screen. Delete this file to get the defaults back.\r\n")
@@ -823,6 +1012,16 @@ local function load_cfg()
 	if text == cfg_text then return false end
 	cfg_text = text
 	cfg = parse_cfg(text)
+	-- a settings file written before the class box (its old first line): the
+	-- passive box takes its new spot and width once, so the two boxes split
+	-- the card evenly
+	if text:find("where the box and the grid sit on the player card", 1, true) then
+		for _, sdef in ipairs(SETTINGS) do
+			if sdef[1] == "box_x" or sdef[1] == "box_w" or sdef[1] == "eq_box_x" then cfg[sdef[1]] = sdef[2] end
+		end
+		write_cfg(cfg)
+		log("settings: file from before the class box; box spots reset so the two boxes split the card")
+	end
 	cfg_rev = cfg_rev + 1
 	return true
 end
@@ -925,28 +1124,42 @@ local function grid_list(rec)
 	return list
 end
 
--- Screen rectangles for the box and, when open, the grid. Regions later in
--- the list win a hit test.
+-- The class choices: the three classes, and ORIGINAL (the armor's own
+-- pieces). Empty for an armor whose body list could not be read.
+local function class_list(rec)
+	if not rec.stock then return {} end
+	return { 0, 1, 2, "own" }
+end
+
+-- Screen rectangles for the two boxes (passive and class) and, when one is
+-- open, its grid. open = "passive", "class" or nil. Regions later in the list
+-- win a hit test.
 local TITLE_H = 20
-local function layout(card, list, gw, gh, open, drag)
+local function layout(card, list, gw, gh, open, drag, classes)
 	local s = card.w / 420
-	local out = { s = s, regions = {}, cells = {} }
+	local out = { s = s, regions = {}, cells = {}, open = open }
 	local function clamp(v, low, high) return math.max(low, math.min(v, math.max(low, high))) end
 	-- while one of them is being dragged it follows the mouse
 	local function moved(key) if drag and drag.key == key then return drag.dx, drag.dy end return 0, 0 end
+	classes = classes or {}
+	if open == "class" and #classes == 0 then open = nil end
 	if open then
-		local cols = cfg.grid_cols
-		local rows = math.max(1, math.ceil(#list / cols))
-		local w, h = cols * cfg.cell_w * s, (rows * cfg.cell_h + TITLE_H) * s
+		local items = open == "class" and classes or list
+		local cols = open == "class" and 1 or cfg.grid_cols
+		local cw = open == "class" and cfg.class_cell_w or cfg.cell_w
+		local rows = math.max(1, math.ceil(#items / cols))
+		local w, h = cols * cw * s, (rows * cfg.cell_h + TITLE_H) * s
 		local dx, dy = moved("grid")
 		local x = clamp(card.x + cfg.grid_x * s + dx, 2, gw - w - 2)
 		local y = clamp(card.y + cfg.grid_y * s + dy, 2, gh - h - 2)
 		out.grid = { x = x, y = y, w = w, h = h, key = "grid" }
 		out.regions[#out.regions + 1] = out.grid
-		for i, enum in ipairs(list) do
+		for i, v in ipairs(items) do
 			local col, row = math.floor((i - 1) / rows), (i - 1) % rows
-			local cell = { x = x + col * cfg.cell_w * s, y = y + h - TITLE_H * s - (row + 1) * cfg.cell_h * s,
-				w = cfg.cell_w * s, h = cfg.cell_h * s, key = "p:" .. enum, enum = enum }
+			local cell = { x = x + col * cw * s, y = y + h - TITLE_H * s - (row + 1) * cfg.cell_h * s,
+				w = cw * s, h = cfg.cell_h * s }
+			if open == "class" then cell.key, cell.class = "c:" .. tostring(v), v
+			else cell.key, cell.enum = "p:" .. v, v end
 			out.cells[#out.cells + 1] = cell
 			out.regions[#out.regions + 1] = cell
 		end
@@ -960,6 +1173,14 @@ local function layout(card, list, gw, gh, open, drag)
 	out.box = { x = clamp(card.x + bx * s + dx, 0, gw - bw), y = clamp(card.y + by * s + dy, 0, gh - bh),
 		w = bw, h = bh, key = "box", text = cfg.box_text }
 	out.regions[#out.regions + 1] = out.box
+	-- the class box keeps its place next to the passive box
+	if #classes > 0 then
+		local cw = cfg.class_w * s
+		local cx, cy = moved("cbox")
+		out.cbox = { x = clamp(out.box.x + cfg.class_dx * s + cx, 0, gw - cw), y = clamp(out.box.y + cfg.class_dy * s + cy, 0, gh - bh),
+			w = cw, h = bh, key = "cbox", text = cfg.box_text }
+		out.regions[#out.regions + 1] = out.cbox
+	end
 	return out
 end
 
@@ -1015,9 +1236,13 @@ local function draw(card, lay, handles, hover, gw, gh)
 	if not target then ui_clear() return end
 	local rec = card.rec
 	local current = u32(rec.at + 28)
+	local class = class_now(rec)
+	local kept = saved[rec.item]
 	local sig = string.format("%.1f,%.1f,%.1f,%.1f|%d,%d|%s|%d,%d,%d|%s|%s|%d", card.x, card.y, card.w, card.h,
-		gw, gh, handles.key, rec.item, current, rec.default, tostring(lay.grid ~= nil), tostring(hover), cfg_rev) .. "|" .. tostring(saved[rec.item])
-		.. string.format("|%.1f,%.1f|%.1f,%.1f", lay.box.x, lay.box.y, lay.grid and lay.grid.x or 0, lay.grid and lay.grid.y or 0)
+		gw, gh, handles.key, rec.item, current, rec.default, tostring(lay.grid ~= nil), tostring(hover), cfg_rev)
+		.. "|" .. tostring(class) .. "|" .. (kept and (tostring(kept.p) .. "," .. tostring(kept.c)) or "-")
+		.. string.format("|%.1f,%.1f|%.1f,%.1f|%s", lay.box.x, lay.box.y, lay.grid and lay.grid.x or 0, lay.grid and lay.grid.y or 0, tostring(lay.open))
+		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "")
 	if ui.world == target and ui.sig == sig then return end
 	ui_clear()
 	local gui = World.create_screen_gui(target, "scale", 1, 1)
@@ -1073,24 +1298,40 @@ local function draw(card, lay, handles, hover, gw, gh)
 	end
 	local s = lay.s
 	local t = math.max(1, s)
+	-- the passive box, as in SAPP: [SET] when F6 saved the passive worn now
 	local box = lay.box
-	local lit = hover == "box" or lay.grid ~= nil
-	local changed = current ~= rec.default
 	rect(box, color(0, 0, 0, cfg.box_alpha))
-	outline(box, lit and gold or muted, t)
-	text(passive_name(current) .. (saved[rec.item] == current and " [SET]" or ""), box, box.text * s, changed and gold or white, 6 * s, true)
+	outline(box, (hover == "box" or lay.open == "passive") and gold or muted, t)
+	local pset = kept and kept.p == current
+	text(passive_name(current) .. (pset and " [SET]" or ""), box, box.text * s, current ~= rec.default and gold or white, 6 * s, true)
+	-- the class box
+	local cbox = lay.cbox
+	if cbox then
+		rect(cbox, color(0, 0, 0, cfg.box_alpha))
+		outline(cbox, (hover == "cbox" or lay.open == "class") and gold or muted, t)
+		local cset = kept and kept.c ~= nil and kept.c == class
+		text(class_text(rec, class) .. (cset and " [SET]" or ""), cbox, cbox.text * s, class ~= "own" and gold or white, 6 * s, true)
+	end
 	if lay.grid then
 		local grid = lay.grid
 		rect(grid, color(0, 0, 0, cfg.grid_alpha))
 		outline(grid, gold, t)
-		text("ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE",
-			{ x = grid.x, y = grid.y + grid.h - TITLE_H * s, w = grid.w, h = TITLE_H * s }, 12 * s, muted, 6 * s)
+		local title = lay.open == "class" and "ARMOR CLASS   W S + SPACE"
+			or "ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE"
+		text(title, { x = grid.x, y = grid.y + grid.h - TITLE_H * s, w = grid.w, h = TITLE_H * s }, 12 * s, muted, 6 * s)
 		for _, cell in ipairs(lay.cells) do
 			if hover == cell.key then rect(cell, color(70, 70, 70, 255), 961) end
-			if cell.enum == current then outline(cell, gold, t) end
-			local label = passive_name(cell.enum)
-			if cell.enum == rec.default then label = label .. " *" end
-			text(label, cell, cfg.grid_text * s, cell.enum == current and gold or white, 6 * s)
+			local on, label
+			if cell.class ~= nil then
+				on = cell.class == class
+				label = cell.class == "own" and "ORIGINAL" or class_name(cell.class)
+			else
+				on = cell.enum == current
+				label = passive_name(cell.enum)
+				if cell.enum == rec.default then label = label .. " *" end
+			end
+			if on then outline(cell, gold, t) end
+			text(label, cell, cfg.grid_text * s, on and gold or white, 6 * s)
 		end
 	end
 	ui.sig = sig
@@ -1113,7 +1354,7 @@ local function hold_diverkit(want)
 		if dk.visible == true then
 			dk.visible = false
 			ui.held = true
-			if not ui.held_said then ui.held_said = true; log("diverkit: held still while the mouse is on the passive box or the grid is open") end
+			if not ui.held_said then ui.held_said = true; log("diverkit: held still while the mouse is on a box or a grid is open") end
 		end
 	elseif ui.held then
 		ui.free_frames = (ui.free_frames or 0) + 1
@@ -1132,6 +1373,9 @@ local function drag_drop(card, lay)
 		local kx, ky = lay.equip and "eq_box_x" or "box_x", lay.equip and "eq_box_y" or "box_y"
 		cfg[kx], cfg[ky] = units(lay.box.x - card.x), units(lay.box.y - card.y)
 		log(string.format("moved: box on the %s page to %s,%s", lay.equip and "Equipment" or "loadout", tostring(cfg[kx]), tostring(cfg[ky])))
+	elseif ui.drag.key == "cbox" and lay.cbox then
+		cfg.class_dx, cfg.class_dy = units(lay.cbox.x - lay.box.x), units(lay.cbox.y - lay.box.y)
+		log(string.format("moved: class box to %s,%s from the passive box", tostring(cfg.class_dx), tostring(cfg.class_dy)))
 	elseif lay.grid then
 		cfg.grid_x, cfg.grid_y = units(lay.grid.x - card.x), units(lay.grid.y - card.y)
 		log(string.format("moved: grid to %s,%s", tostring(cfg.grid_x), tostring(cfg.grid_y)))
@@ -1143,7 +1387,7 @@ end
 local function ui_hide()
 	if ui.visible then ui_note("box: hidden (card not on screen)") end
 	ui_clear()
-	ui.visible, ui.open, ui.previous, ui.armed, ui.sel = false, false, nil, nil, nil
+	ui.visible, ui.open, ui.previous, ui.armed, ui.sel = false, nil, nil, nil, nil
 	ui.press, ui.drag, ui.was_down = nil, nil, nil
 end
 
@@ -1166,14 +1410,16 @@ local function ui_step()
 		ui_note(string.format("box: card at %.1f,%.1f size %.1fx%.1f, screen %dx%d, slot %d, wearing %s",
 			card.x, card.y, card.w, card.h, gw, gh, card.slot, card.rec.name))
 	end
-	local list = grid_list(card.rec)
-	local lay = layout(card, list, gw, gh, ui.open, ui.drag)
+	local list, classes = grid_list(card.rec), class_list(card.rec)
+	if ui.open == "class" and #classes == 0 then ui.open = nil end
+	local function relayout() return layout(card, list, gw, gh, ui.open, nil, classes) end
+	local lay = layout(card, list, gw, gh, ui.open, ui.drag, classes)
 	local sample = pointer_sample(gw, gh)
 	local hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	local clicked = pointer_step(sample, hover or (ui.open and sample and "outside") or nil)
-	-- a press on the box or on the grid's own background that then moves is a drag, not a click
+	-- a press on a box or on the grid's own background that then moves is a drag, not a click
 	if sample and cfg.drag ~= 0 then
-		if sample.down and ui.was_down == false and (hover == "box" or hover == "grid") then
+		if sample.down and ui.was_down == false and (hover == "box" or hover == "cbox" or hover == "grid") then
 			ui.press = { key = hover, x = sample.x, y = sample.y }
 		elseif sample.down and ui.press then
 			local dx, dy = sample.x - ui.press.x, sample.y - ui.press.y
@@ -1183,7 +1429,7 @@ local function ui_step()
 				drag_drop(card, lay)
 				clicked = nil
 				ui.drag = nil
-				lay = layout(card, list, gw, gh, ui.open)
+				lay = relayout()
 				hover = hit(lay.regions, sample.x, sample.y)
 			end
 			ui.press = nil
@@ -1192,31 +1438,44 @@ local function ui_step()
 	else
 		ui.press, ui.drag, ui.was_down = nil, nil, nil
 	end
+	local function class_of_key(key) local v = key:sub(3) return v == "own" and "own" or tonumber(v) end
 	if clicked then
-		if clicked == "box" then ui.open = not ui.open
-		elseif clicked == "outside" then ui.open = false
+		if clicked == "box" then ui.open = ui.open ~= "passive" and "passive" or nil
+		elseif clicked == "cbox" then ui.open = ui.open ~= "class" and "class" or nil
+		elseif clicked == "outside" then ui.open = nil
 		elseif clicked:sub(1, 2) == "p:" then
 			apply_pick(card.rec, tonumber(clicked:sub(3)))
-			ui.open = false
+			ui.open = nil
+		elseif clicked:sub(1, 2) == "c:" then
+			apply_class(card.rec, class_of_key(clicked))
+			ui.open = nil
 		end
-		lay = layout(card, list, gw, gh, ui.open)
+		lay = relayout()
 		hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	end
 	if ui.open then
 		-- one highlight, moved by the mouse or by W/A/S/D; Space picks it
+		local items = ui.open == "class" and classes or list
+		local cols_wanted = ui.open == "class" and 1 or cfg.grid_cols
 		local sel = ui.sel
-		if not sel or ui.sel_item ~= card.rec.item then
+		if not sel or ui.sel_key ~= card.rec.item .. ui.open then
 			sel = 1
-			local current = u32(card.rec.at + 28)
-			for i, enum in ipairs(list) do if enum == current then sel = i end end
-			ui.sel_item = card.rec.item
+			if ui.open == "class" then
+				local c = class_now(card.rec)
+				for i, v in ipairs(items) do if v == c then sel = i end end
+			else
+				local current = u32(card.rec.at + 28)
+				for i, enum in ipairs(items) do if enum == current then sel = i end end
+			end
+			ui.sel_key = card.rec.item .. ui.open
 		end
-		if sample and (sample.x ~= ui.mx or sample.y ~= ui.my) and hover and hover:sub(1, 2) == "p:" then
-			local enum = tonumber(hover:sub(3))
-			for i, e in ipairs(list) do if e == enum then sel = i end end
+		if sample and (sample.x ~= ui.mx or sample.y ~= ui.my) and hover and hover:find("^[pc]:") then
+			for _, cell in ipairs(lay.cells) do
+				if cell.key == hover then for i, v in ipairs(items) do if v == (cell.class ~= nil and cell.class or cell.enum) then sel = i end end end
+			end
 		end
-		local rows = math.max(1, math.ceil(#list / cfg.grid_cols))
-		local cols = math.ceil(#list / rows)
+		local rows = math.max(1, math.ceil(#items / cols_wanted))
+		local cols = math.ceil(#items / rows)
 		local col, row = math.floor((sel - 1) / rows), (sel - 1) % rows
 		if nav_step(VK_W, true) then
 			row = row - 1
@@ -1224,19 +1483,19 @@ local function ui_step()
 		end
 		if nav_step(VK_S, true) then
 			row = row + 1
-			if row >= rows or col * rows + row + 1 > #list then row = 0 end
+			if row >= rows or col * rows + row + 1 > #items then row = 0 end
 		end
 		if nav_step(VK_A, true) then col = (col - 1) % cols end
 		if nav_step(VK_D, true) then col = (col + 1) % cols end
-		sel = math.max(1, math.min(#list, col * rows + row + 1))
+		sel = math.max(1, math.min(#items, col * rows + row + 1))
 		ui.sel = sel
 		if nav_step(VK_SPACE, false) then
-			apply_pick(card.rec, list[sel])
-			ui.open, ui.sel = false, nil
-			lay = layout(card, list, gw, gh, ui.open)
+			if ui.open == "class" then apply_class(card.rec, items[sel]) else apply_pick(card.rec, items[sel]) end
+			ui.open, ui.sel = nil, nil
+			lay = relayout()
 			hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 		else
-			hover = "p:" .. list[sel]
+			hover = (ui.open == "class" and "c:" or "p:") .. tostring(items[sel])
 		end
 	else
 		ui.sel = nil
@@ -1345,7 +1604,7 @@ local function tick()
 		if owned and total > 0 then
 			report_owned(owned, total, count)
 			apply_saved()
-			log("DISCOVERY OK - on the player card: click the passive box. Keys: F6 (set_key) = hard set the worn armor's passive")
+			log("DISCOVERY OK - on the player card: click the box. Keys: F6 (set_key) = hard set the worn armor's class and passive")
 			phase = "watch"
 		else
 			retries = retries + 1
@@ -1379,10 +1638,8 @@ local function tick()
 				local worn = read and c and records[c.armor]
 				if worn then revert_others(worn) end
 			end
-			if rec then text = text .. " | " .. cache_text() end
-			if rec and set then
-				text = read_loadout() .. " | " .. cache_text()
-			end
+			if rec and set then text = read_loadout() end
+			if rec then text = text .. ", class " .. class_text(rec, class_now(rec)) .. " | " .. cache_text() end
 			if text ~= last_loadout then last_loadout = text; log(text) end
 		end
 	end
