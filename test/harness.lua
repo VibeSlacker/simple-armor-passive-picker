@@ -2,7 +2,7 @@
 -- (a fake game.dll image holding the signatures, a catalog, ownership, a
 -- loadout screen with one player card, the player cache), a fake Gui and a
 -- fake mouse, then runs the built mod against it frame by frame.
---   luajit test/harness.lua <built lua> <data/sigs.json> <scratch dir> [nofont|badinput|saved]   (stdin closed)
+--   luajit test/harness.lua <built lua> <data/sigs.json> <scratch dir> [nofont|badinput|saved|noarena]   (stdin closed)
 -- Windows calls are replaced with stand-ins, so this proves the mod's own
 -- logic, not the game's layout or the engine calls.
 local built, sigs_path, scratch, mode = arg[1], arg[2], arg[3], arg[4]
@@ -20,6 +20,19 @@ local function alloc(n)
 	local b = ffi.new("uint8_t[?]", n)
 	local at = tonumber(ffi.cast("uintptr_t", b))
 	buffers[#buffers + 1] = { b = b, at = at, n = n }
+	return at
+end
+-- memory at a chosen address (Linux mmap, never replacing a mapping): the game's lists in a
+-- 4 GB window of their own, and the stand-in for VirtualAlloc
+pcall(ffi.cdef, "void *mmap(void *addr, size_t len, int prot, int flags, int fd, long off); int munmap(void *addr, size_t len);")
+local function map_at(at, n)
+	local got = ffi.C.mmap(ffi.cast("void *", at), n, 3, 0x22 + 0x100000, -1, 0)
+	local g = tonumber(ffi.cast("uintptr_t", got))
+	if g ~= at then
+		if g < 2 ^ 63 then ffi.C.munmap(got, n) end
+		return nil
+	end
+	buffers[#buffers + 1] = { at = at, n = n }
 	return at
 end
 local function w32(a, v) ffi.cast("uint32_t *", a)[0] = v end
@@ -126,7 +139,8 @@ for i, a in ipairs(ARMOR) do
 	local want = i == 1 and 12 or i == 2 and 4 or 0
 	a.at = room + (want - room % 64) % 64
 	w32(a.at, a.id); w32(a.at + 28, a.p); wptr(kits + (i - 1) * 8, a.at)
-	a.list = alloc(48)
+	-- armor 1's list in a 4 GB window away from Lua's memory (top 4 bytes 0x7000), so its copies have to be placed there
+	a.list = i == 1 and assert(map_at(0x700000010000, 0x10000), "no memory at 0x700000010000") or alloc(48)
 	for b = 0, 1 do
 		local pieces = alloc(96 * #a.pieces)
 		for k, piece in ipairs(a.pieces) do
@@ -201,6 +215,7 @@ end
 
 -- ---------------------------------------------------------------- fake Windows
 local keys, mouse = {}, { x = 5, y = 5, down = false, focused = true }
+local qpc_now, qpc_step = 0, 10
 local kernel = {
 	VirtualQuery = function (address, region, size)
 		local a = tonumber(ffi.cast("uintptr_t", address))
@@ -211,12 +226,24 @@ local kernel = {
 				return size
 			end
 		end
-		r.base = ffi.cast("void *", a - a % 4096); r.size = 4096; r.state = 0x10000; r.protection = 1
+		-- free up to the next buffer (one stretch, like a hole between the game's mappings)
+		local base, stop = a - a % 4096, a - a % 4096 + 4294967296
+		for _, b in ipairs(buffers) do if b.at > base and b.at < stop then stop = b.at end end
+		r.base = ffi.cast("void *", base); r.size = stop - base; r.state = 0x10000; r.protection = 1
 		return size
 	end,
 	GetModuleHandleA = function () return ffi.cast("void *", image) end,
 	VirtualProtect = function () return 0 end,
+	-- placement at the asked address or nothing, like VirtualAlloc with an address; never in noarena mode
+	VirtualAlloc = function (address, size)
+		if mode == "noarena" then return nil end
+		local at = map_at(tonumber(ffi.cast("uintptr_t", address)), size)
+		return at and ffi.cast("void *", at) or nil
+	end,
 	GetCurrentProcessId = function () return 42 end,
+	-- a 10 MHz clock that moves qpc_step counts each time it is read
+	QueryPerformanceFrequency = function (p) p[0] = 10000000 return 1 end,
+	QueryPerformanceCounter = function (p) qpc_now = qpc_now + qpc_step p[0] = qpc_now return 1 end,
 }
 local window = ffi.cast("void *", 0x1234)
 local user = {
@@ -227,7 +254,36 @@ local user = {
 	ScreenToClient = function () return 1 end,
 	GetClientRect = function (_, p) local q = ffi.cast("int32_t *", p) q[0], q[1], q[2], q[3] = 0, 0, 1920, 1080 return 1 end,
 }
-ffi.load = function (name) return name == "kernel32" and kernel or user end
+-- a controller: an XInput pad in slot pad.slot (nil = none plugged in), and a plain joystick with id joy.id
+local pad = { slot = nil, buttons = 0, lx = 0, ly = 0, calls = 0 }
+local joy = { id = nil, buttons = 0, x = 32767, y = 32767, pov = 65535, calls = 0 }
+local xinput = {
+	XInputGetState = function (i, p)
+		pad.calls = pad.calls + 1
+		if i ~= pad.slot then return 1167 end   -- ERROR_DEVICE_NOT_CONNECTED
+		local b = ffi.cast("uint8_t *", p)
+		ffi.cast("uint16_t *", b + 4)[0] = pad.buttons
+		ffi.cast("int16_t *", b + 8)[0] = pad.lx; ffi.cast("int16_t *", b + 10)[0] = pad.ly
+		return 0
+	end,
+}
+local winmm = {
+	joyGetPosEx = function (id, p)
+		joy.calls = joy.calls + 1
+		local q = ffi.cast("uint32_t *", p)
+		assert(q[0] == 52 and q[1] == 0xFF, "joystick info not set up")
+		if id ~= joy.id then return 167 end   -- JOYERR_UNPLUGGED
+		q[2], q[3], q[8], q[10] = joy.x, joy.y, joy.buttons, joy.pov
+		return 0
+	end,
+}
+ffi.load = function (name)
+	if name == "kernel32" then return kernel end
+	if name == "xinput1_4" then return xinput end
+	if name == "winmm" then return winmm end
+	if name == "user32" then return user end
+	error("no library " .. name)
+end
 
 -- ---------------------------------------------------------------- fake engine
 local MAIN, MENU = { "main" }, { "menu" }
@@ -358,6 +414,19 @@ elseif mode == "nofont" then
 	check(r32(ARMOR[3].at + 28) == 8, "F8 does nothing any more")
 	keys[0x79] = true; run(2); keys[0x79] = nil; run(2)
 	check(r32(ARMOR[3].at + 28) == 8 and not log_text():find("F10", 1, true), "F10 does nothing any more")
+elseif mode == "noarena" then
+	print("no copy block can be placed")
+	local function pick(id, value)
+		w32(payload + 0x12c, id); point_at(1500, 200); run(40)
+		click_at(55 + CBX + 40, 366 + BY + 13); point_at(1500, 200); run(3)
+		local m = find_text(surface(), value); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	end
+	pick(ARMOR[1].id, "150")
+	check(log_text():find("copy memory: no free room left in window 0x7000; further copies in Lua memory", 1, true), "log says the copies go in Lua memory")
+	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("CLASS WRITE FAILED on FS-37 Ravager: crosses a cache line", 1, true),
+		"a record across a cache line, with its copy outside its list's window, is refused as before and never half written")
+	pick(ARMOR[2].id, "150")
+	check(r64(ARMOR[2].at + 48) ~= ARMOR[2].list and log_text():find("CLASS FS-55 Devastator: ARMOR RATING 75 -> ARMOR RATING 150", 1, true), "a record inside one cache line still takes its pick")
 else
 	print("box")
 	local g, count = surface()
@@ -569,8 +638,15 @@ else
 	wptr(ARMOR[2].at + 48, ARMOR[2].list)
 	print("a record whose body list pointer crosses a cache line")
 	w32(payload + 0x12c, ARMOR[1].id); point_at(1500, 200); run(40)
+	check((ARMOR[1].at + 48) % 64 == 60, "armor 1's pointer straddles a cache line (offset 60, like a third of the game's records)")
 	open_class(); m = find_text(surface(), "150"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
-	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("CLASS WRITE FAILED on FS-37 Ravager: crosses a cache line", 1, true), "refused, and the log says why")
+	local l1 = r64(ARMOR[1].at + 48)
+	check(l1 ~= ARMOR[1].list and math.floor(l1 / 4294967296) == 0x7000 and weights(ARMOR[1]):find("^0:2%.0%.2%.abcd 4%.0%.2%.abcd 5%.0%.2") ~= nil,
+		"it takes the pick: the copy sits in the 4 GB window of its own list, every rated piece heavy")
+	check(log_text():find("CLASS FS-37 Ravager: ARMOR RATING 50 -> ARMOR RATING 150 (plain writable page, low 4 bytes)", 1, true)
+		and log_text():find("copy memory: 64 KB at 0x700000000000, next to the game's lists", 1, true), "only the low 4 bytes written, and the log says where the copies live")
+	open_class(); m = find_text(surface(), "ORIGINAL (50)"); click_at(m.x + 10, m.y + 2); point_at(1500, 200); run(3)
+	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("ARMOR RATING 150 -> ARMOR RATING 50 (plain writable page, low 4 bytes)", 1, true), "ORIGINAL puts its own list back the same way")
 	check((ARMOR[2].at + 48) % 8 == 4 and log_text():find("CLASS FS-55 Devastator: ARMOR RATING 75 -> ARMOR RATING 100", 1, true), "a record only 4-byte aligned (armor 2) still took its picks")
 	print("dragging the class box")
 	w32(payload + 0x12c, ARMOR[3].id); point_at(1500, 200); run(40)
@@ -799,6 +875,143 @@ else
 	w32(owner + 8, 0); w32(manager + 0x62a0, 0); run(3); press(F6)
 	check(log_text():find("key ignored: loadout screen not open", 1, true), "F6 away from the loadout screen does nothing")
 	w32(manager + 0x62a0, 1); w32(owner + 8, 1); run(12)
+
+	print("controller")
+	-- armor 3 worn on its own passive (SERVO-ASSISTED) and rating. Passive grid: column 1 = ENGINEERING KIT,
+	-- FORTIFIED; column 2 = SERVO-ASSISTED. Rating grid: 50, 67, 83, 100, 133, 150, ORIGINAL
+	local R3, PA, PB, PY, LB, RB, UP, DOWN, LEFT, RIGHT = 0x80, 0x1000, 0x2000, 0x8000, 0x100, 0x200, 1, 2, 4, 8
+	local PTITLE = "ARMOR PASSIVE   (* = own)   A PICK   B CLOSE   Y SET   LB RATING"
+	local PCTITLE = "ARMOR RATING   A PICK   B CLOSE   RB PASSIVE"
+	local function ptap(b) pad.buttons = b; run(2); pad.buttons = 0; run(2) end
+	local function pad_grid() return find_text(surface(), PTITLE) ~= nil end
+	local function pad_class() return find_text(surface(), PCTITLE) ~= nil end
+	local function backs() local k = 0 for _, c in ipairs(consumed) do if c.action == 11 then k = k + 1 end end return k end
+	point_at(1500, 200); run(3)
+	check(r32(ARMOR[3].at + 28) == 8 and r64(ARMOR[3].at + 48) == ARMOR[3].list and not saved_text():find("3672418116", 1, true),
+		"starting from armor 3 on its own passive and rating, nothing hard set")
+	check(log_text():find("controller: XInput xinput1_4, plain joysticks through winmm", 1, true), "both readers found")
+	local n, nj = pad.calls, joy.calls
+	run(150)
+	check(pad.calls - n >= 36 and pad.calls - n <= 44 and joy.calls - nj >= 36 and joy.calls - nj <= 44,
+		"no pad plugged in: four slots tried about every 15 frames, not every frame")
+	pad.slot = 1; run(16)
+	check(log_text():find("controller: XInput pad in slot 1", 1, true), "a pad plugged in is found")
+	n = pad.calls; run(60)
+	check(pad.calls - n == 60, "then only its own slot is read, once a frame")
+	ptap(R3)
+	check(pad_grid() and not is_open(), "right stick click opens the passive grid, its title shows the pad's buttons")
+	ptap(LEFT); ptap(PA)
+	check(r32(ARMOR[3].at + 28) == 6 and r32(cache + 0x3c) == 6, "D-pad left then A picks ENGINEERING KIT, record and cache")
+	check(not pad_grid() and find_text(surface(), "ENGINEERING KIT") ~= nil, "A closes the grid, the box shows the pick")
+	ptap(R3); ptap(DOWN); ptap(PA)
+	check(r32(ARMOR[3].at + 28) == 3, "D-pad down moves down the column")
+	ptap(R3); ptap(RIGHT); ptap(PA)
+	check(r32(ARMOR[3].at + 28) == 8, "D-pad right from FORTIFIED lands on the short column's SERVO-ASSISTED")
+	ptap(R3); pad.lx = -30000; run(2); pad.lx = 0; run(2); ptap(PA)
+	check(r32(ARMOR[3].at + 28) == 6, "the left stick moves the highlight too")
+	ptap(R3); pad.ly = 9000; run(4); pad.ly = 0; run(2)
+	check(pad_grid() and find_text(surface(), "ENGINEERING KIT") ~= nil, "a stick barely leaning is not a direction")
+	n = #consumed; run(10)
+	check(#consumed == n + 10 * 20, "while the pad drives the grid, Back is swallowed as well as the 19 menu actions")
+	local nb = backs()
+	ptap(PB)
+	check(not pad_grid() and r32(ARMOR[3].at + 28) == 6, "B closes the grid and changes nothing")
+	check(backs() > nb, "the B that closes it is kept from the game's Back")
+	run(30); n = #consumed; run(60)
+	check(#consumed == n, "nothing swallowed once the grid is closed and B let go")
+	ptap(R3); pad.buttons = PB; run(2)
+	check(not pad_grid(), "B held: grid closed")
+	run(40); nb = backs(); run(2)
+	check(backs() > nb, "Back stays swallowed for as long as B is held")
+	pad.buttons = 0; run(14); n = #consumed; run(10)
+	check(#consumed == n, "and stops shortly after it is let go")
+	ptap(R3); ptap(R3)
+	check(not pad_grid() and r32(ARMOR[3].at + 28) == 6, "right stick click again closes it")
+	ptap(R3); ptap(LB)
+	check(pad_class() and not pad_grid(), "LB switches to the rating grid")
+	ptap(UP); ptap(PA)
+	check(r64(ARMOR[3].at + 48) ~= ARMOR[3].list and find_text(surface(), "ARMOR RATING 150") ~= nil, "up from ORIGINAL then A picks 150")
+	ptap(R3); ptap(LB); ptap(RB)
+	check(pad_grid() and not pad_class(), "RB switches back to the passive grid")
+	ptap(PY)
+	check(saved_text():find("3672418116 = 6, 150", 1, true), "Y hard sets the worn armor's passive and rating, as F6 does")
+	check(pad_grid() and find_text(surface(), "ENGINEERING KIT [SET]") ~= nil and find_text(surface(), "ARMOR RATING 150 [SET]") ~= nil,
+		"the grid stays open, both boxes show [SET]")
+	ptap(RIGHT); ptap(PA); ptap(R3); ptap(LB); ptap(DOWN); ptap(PA)
+	check(r32(ARMOR[3].at + 28) == 8 and r64(ARMOR[3].at + 48) == ARMOR[3].list, "back on its own passive and ORIGINAL by pad")
+	ptap(R3); ptap(PY); ptap(PB)
+	check(not saved_text():find("3672418116", 1, true) and not pad_grid(), "Y on the armor's own forgets the hard set")
+	pad.buttons = PA; run(2); pad.buttons = PA + R3; run(2); pad.buttons = PA; run(30)
+	check(pad_grid() and r32(ARMOR[3].at + 28) == 8, "an A already held when the grid opens picks nothing")
+	pad.buttons = 0; run(2); ptap(PB)
+	ptap(R3); point_at(1400, 300); run(3)
+	check(find_text(surface(), TITLE) ~= nil, "the mouse moving gives the keyboard's title back")
+	ptap(DOWN)
+	check(pad_grid(), "a pad button gives the pad's title back")
+	tap(S)
+	check(is_open() and not pad_grid(), "and so does a key")
+	click_at(1500, 200); point_at(1500, 200); run(3)
+	check(not is_open() and not pad_grid(), "a click outside still closes it")
+	mouse.focused = false; ptap(R3); mouse.focused = true; run(3)
+	check(not pad_grid() and not is_open(), "nothing opens while the window is not focused")
+	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("pad_open = 3\r\n"); f:close(); run(130)
+	ptap(R3)
+	check(not pad_grid(), "pad_open = 3: the right stick click does nothing")
+	ptap(0x20)
+	check(pad_grid(), "and Back/View opens the grid")
+	ptap(0x20)
+	check(not pad_grid(), "and closes it")
+	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("pad_open = 0\r\n"); f:close(); run(130)
+	ptap(R3); ptap(0x20); ptap(0x40); ptap(0x10)
+	check(not pad_grid() and not is_open(), "pad_open = 0: no button opens it")
+	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("pad = 0\r\n"); f:close(); run(130)
+	n = pad.calls; ptap(R3); run(60)
+	check(not pad_grid() and pad.calls == n, "pad = 0: the controller is not read at all")
+	check(picker.test.parse_cfg("pad_open = 9\njoy_pick = 99").pad_open == 4 and picker.test.parse_cfg("joy_pick = 99").joy_pick == 32, "pad settings clamped")
+	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
+	w32(owner + 8, 0); run(12); n = pad.calls; run(300)
+	check(pad.calls == n, "not read at all while the card is off screen")
+	pad.buttons = R3; w32(owner + 8, 1); run(12)
+	check(not pad_grid(), "a button held while the card comes back does nothing")
+	pad.buttons = 0; run(2)
+	pad.slot = nil; run(3)
+	check(log_text():find("controller: XInput pad 1 gone", 1, true), "an unplugged pad is noticed")
+	print("plain joystick")
+	local function jtap(b) joy.buttons = b; run(2); joy.buttons = 0; run(2) end
+	local function hat(p) joy.pov = p; run(2); joy.pov = 65535; run(2) end
+	joy.id = 2; run(80)   -- four ids per try: all sixteen within a second
+	check(log_text():find("controller: plain joystick 2 (no XInput pad)", 1, true), "a plain joystick is found when there is no XInput pad")
+	jtap(2 ^ 11)
+	check(pad_grid() and log_text():find("controller: joystick button 12 pressed", 1, true), "button 12 opens the grid, the log names the button")
+	hat(27000); jtap(2)
+	check(r32(ARMOR[3].at + 28) == 6, "hat left then button 2 picks")
+	jtap(2 ^ 11); hat(9000); jtap(2)
+	check(r32(ARMOR[3].at + 28) == 8, "hat right moves a column")
+	jtap(2 ^ 11); joy.x = 0; run(2); joy.x = 32767; run(2); jtap(2)
+	check(r32(ARMOR[3].at + 28) == 6, "its stick moves too")
+	jtap(2 ^ 11); jtap(4)
+	check(not pad_grid() and r32(ARMOR[3].at + 28) == 6, "button 3 closes")
+	jtap(2 ^ 11); hat(9000); jtap(2)
+	check(r32(ARMOR[3].at + 28) == 8, "back on its own passive")
+	joy.id = nil; run(3)
+	check(log_text():find("controller: joystick 2 gone", 1, true), "an unplugged joystick is noticed")
+	local before_logs = #log_text()
+	pad.slot, joy.id = 0, 0; run(20)
+	local fresh = log_text():sub(before_logs + 1)
+	check(fresh:find("controller: XInput pad in slot 0", 1, true) and not fresh:find("plain joystick", 1, true), "with both plugged in the XInput pad wins")
+	pad.slot, joy.id = nil, nil; run(3)
+	print("a controller that fails")
+	local real = xinput.XInputGetState
+	xinput.XInputGetState = function () error("driver fell over") end
+	run(20); xinput.XInputGetState = real
+	check(log_text():find("controller: off for this session, ", 1, true) and log_text():find("driver fell over", 1, true), "turns itself off and says why")
+	pad.slot = 1; n = pad.calls; ptap(R3); run(30)
+	check(pad.calls == n and not pad_grid(), "and is not read again")
+	pad.slot = nil
+	click_at(55 + BX + 80, 366 + BY + 14)
+	check(is_open(), "the mouse still opens the grid")
+	click_at(1500, 200); point_at(1500, 200); run(3)
+	check(not log_text():find("stopped", 1, true), "nothing else stopped")
 end
 
 if mode == nil or mode == "" then   -- leave armor 3 heavy, for shutdown to put back
@@ -807,6 +1020,13 @@ if mode == nil or mode == "" then   -- leave armor 3 heavy, for shutdown to put 
 	click_at(h.x + 10, h.y + 2); point_at(1500, 200); run(3)
 	check(r64(ARMOR[3].at + 48) ~= ARMOR[3].list, "armor 3 left heavy before shutdown")
 end
+print("own cost")
+check(not log_text():find("cost: own work", 1, true), "no cost line before a minute has passed")
+qpc_step = 5000000   -- every clock read now half a second later
+run(70)
+qpc_step = 10
+check(log_text():find("cost: own work 50%d%.%d+ ms per second over 6%d s %(%d+ frames, worst frame 500%.000 ms%)") ~= nil,
+	"once a minute the log gives the mod's own time per second and its worst frame")
 print("shutdown")
 rawget(_G, "shutdown")()
 local _, left = surface()

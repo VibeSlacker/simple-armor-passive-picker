@@ -1,4 +1,4 @@
-Simple Armor Passive Picker 1.2.0
+Simple Armor Passive Picker 1.3.0
 by vibeslacker
 Made with AI.
 
@@ -14,8 +14,10 @@ pre-mission loadout screen.
   slower than 50). ORIGINAL gives the armor its own stats back.
   Some armors are built from fewer pieces, so their steps are coarser: the
   grid shows the nearest number that armor can really make (70 comes out as
-  71 on most armors). Passive bonuses such as Extra Padding still add on top
-  in the Armory, as usual.
+  71 on most armors).
+  The Armory adds the armor's own passive bonus on top of the rating you pick:
+  Extra Padding adds 50 and Unflinching adds 25, so a pick of 150 reads 200 or
+  175 there. The box shows the number you picked; the passive's bonus is extra.
 - The passive box (right) shows the passive of the armor you are wearing.
   Click it and a grid opens with every passive you own. Pick one and it goes
   on the armor you are wearing.
@@ -30,6 +32,11 @@ The look of the armor never changes.
   show [SET]. To undo, pick ORIGINAL and the armor's own passive (marked *) and
   press F6 again.
 - Mouse, or W/A/S/D and Space once a grid is open.
+- Controller: click the right stick on the loadout screen to open the
+  passive grid. In a grid: D-pad or left stick moves, A picks, B closes,
+  Y keeps the pick for good (same as F6), LB goes to the rating grid, RB
+  back to the passive grid. Works with Xbox pads and any pad Steam Input
+  handles (PlayStation, Switch, most USB pads). See CONTROLLER below.
 - The boxes and the grids can be dragged anywhere. Their spots are saved.
 
 REQUIREMENTS
@@ -56,6 +63,18 @@ If you also run DiverKit, it is paused while your mouse is on a box or a
 grid is open, so a click cannot press a DiverKit button underneath.
 hold_diverkit = 0 turns that off.
 
+CONTROLLER
+pad = 0 turns the controller off. pad_open picks the button that opens
+the grid: 1 = right stick click (default), 2 = left stick click (DiverKit
+uses that one too), 3 = Back/View, 4 = Start, 0 = none.
+An old USB pad that Windows shows only as a plain joystick (not as an
+Xbox pad) works too: it moves with its D-pad or stick, and its buttons
+are set by number (joy_open 12, joy_pick 2, joy_close 3, joy_set 4,
+joy_prev 5, joy_next 6). Not sure of your numbers? Press the buttons on
+the loadout screen and the log names each one.
+If Steam Input is on for the game (the default), your pad shows as an
+Xbox pad and none of the joy_ settings matter.
+
 GOOD TO KNOW
 - Made with AI: the code was written by an AI and tested in the game by a
   human.
@@ -76,6 +95,14 @@ DiverKit, whose mods showed me where the game keeps things. This mod
 contains none of their code and needs neither installed.
 
 CHANGES
+1.3.0  Fixed: the rating box did nothing on about a third of the armors
+       (UF-50 Bloodhound, BP-20 Correct Officer, B-01 Tactical and others).
+       Controller support (asked for by a player): right stick click opens
+       the grid, D-pad or left stick, A, B, Y, LB, RB do the rest. The
+       mod's own time per second goes in its log once a minute, and the
+       worn armor is read less often during missions.
+       Easier to read: the rating grid is centered and larger, the pick is
+       a solid gold bar, and the bar the cursor is on gets a gold frame.
 1.2.0  Armor rating: the class box now picks a rating number, 50, 64, 70,
        79, 100, 129 or 150, instead of LIGHT, MEDIUM or HEAVY, so the odd
        stock ratings can be picked too, and armors that have one can be

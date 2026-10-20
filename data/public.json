@@ -3,12 +3,12 @@
  "author": "vibeslacker",
  "replace": [
   {
-   "from": "-- Passive Picker, test build 0.27, for Bingus Shared Loader v15+.",
-   "to": "-- Passive Picker 1.2.0, for Bingus Shared Loader v15+."
+   "from": "-- Passive Picker, test build 0.32, for Bingus Shared Loader v15+.",
+   "to": "-- Passive Picker 1.3.0, for Bingus Shared Loader v15+."
   },
   {
-   "from": "local REVISION = \"Passive Picker test 0.27\"",
-   "to": "local REVISION = \"Passive Picker 1.2.0\""
+   "from": "local REVISION = \"Passive Picker test 0.32\"",
+   "to": "local REVISION = \"Passive Picker 1.3.0\""
   },
   {
    "from": "-- DiverKit is held still (its own \"visible\" flag is cleared, which makes it\n-- skip its frame; its panel stays drawn) and a click here cannot also press one\n-- of its buttons. hold_diverkit = 0 in the settings file turns that off.",

@@ -1,5 +1,5 @@
 -- HD2-Addon: mods/jarvis/passive_picker
--- Passive Picker, test build 0.27, for Bingus Shared Loader v15+.
+-- Passive Picker, test build 0.32, for Bingus Shared Loader v15+.
 --
 -- Picks the armor rating (50 light to 150 heavy) and the passive of the armor
 -- worn on the pre-mission loadout screen, from two clickable boxes of the same
@@ -12,6 +12,14 @@
 -- you own. The look of the armor is never touched. While a grid is
 -- open the highlight moves with the mouse or with W/A/S/D, and Space or a
 -- click picks and closes it.
+-- A controller works too, read the way DiverKit and HD2 Transmog read theirs
+-- (XInput: Xbox pads and every pad Steam Input hands the game; else a plain
+-- Windows joystick, for a USB pad that only shows up as one). The right stick
+-- click opens and closes the passive grid (pad_open in the settings file);
+-- with a grid open the D-pad or the left stick moves the highlight, A picks,
+-- B closes, Y hard sets (as F6 does), LB goes to the rating grid and RB to the
+-- passive grid. A plain joystick's buttons are set by number in the settings
+-- file (joy_*). The pad is only read while the player card is on screen.
 -- While it is open the game's own menu is kept from hearing those keys, by
 -- calling the game's "consume input" function (the one call this mod makes
 -- into game code; block_keys = 0 in the settings file turns it off).
@@ -27,8 +35,9 @@
 -- 79 are two and four medium pieces out of seven, 129 is three medium and four
 -- heavy. The mod copies the pieces once per armor and rating, sets the weights
 -- in the copy (slots 6, 7, 8, 9 raised first, then 2, 4, 5, the way the stock
--- odd armors have them), and swaps the record's 8-byte pointer to the copy (read
--- back). Copies are kept for the whole session and never freed, so the game
+-- odd armors have them), and swaps the record's pointer to the copy (only its
+-- low 4 bytes when it can, so records whose pointer crosses a cache line change
+-- too; read back). Copies are kept for the whole session and never freed, so the game
 -- can never read freed memory. Records are put back when the game shuts down.
 -- A pick belongs to the armor being worn: once another armor is worn, the one
 -- left behind goes back to its own class and passive, or to its hard-set ones.
@@ -72,7 +81,7 @@
 --                    card+0x1b820 (used as the anchor for the box)
 
 if rawget(_G, "JarvisPassivePicker") then return true end
-local REVISION = "Passive Picker test 0.27"
+local REVISION = "Passive Picker test 0.32"
 local state = { revision = REVISION, frames = 0, status = "starting" }
 rawset(_G, "JarvisPassivePicker", state)
 
@@ -116,6 +125,7 @@ typedef struct {
 pcall(ffi.cdef, "size_t VirtualQuery(const void *address, void *region, size_t size);")
 pcall(ffi.cdef, "void *GetModuleHandleA(const char *name);")
 pcall(ffi.cdef, "int VirtualProtect(void *a, size_t n, uint32_t p, uint32_t *old);")
+pcall(ffi.cdef, "void *VirtualAlloc(void *a, size_t n, uint32_t type, uint32_t p);")
 pcall(ffi.cdef, "short GetAsyncKeyState(int key);")
 pcall(ffi.cdef, "void *GetForegroundWindow(void);")
 pcall(ffi.cdef, "uint32_t GetWindowThreadProcessId(void *window, uint32_t *pid);")
@@ -123,6 +133,8 @@ pcall(ffi.cdef, "uint32_t GetCurrentProcessId(void);")
 pcall(ffi.cdef, "int GetCursorPos(void *);")
 pcall(ffi.cdef, "int ScreenToClient(void *, void *);")
 pcall(ffi.cdef, "int GetClientRect(void *, void *);")
+pcall(ffi.cdef, "int QueryPerformanceCounter(int64_t *count);")
+pcall(ffi.cdef, "int QueryPerformanceFrequency(int64_t *rate);")
 local kernel = ffi.load("kernel32")
 local user = ffi.load("user32")
 local MEM_COMMIT = 0x1000
@@ -193,6 +205,71 @@ end
 local function put32(a, v) return put(a, v, 4) end
 local function put64(a, v) return put(a, v, 8) end
 
+-- A body list pointer is changed by writing only its low 4 bytes when the old
+-- and new pointers share the top 4: one aligned 4-byte write, whole wherever
+-- the record sits (about a third of the game's records have +48 across a
+-- cache line, where the 8-byte write is refused). Otherwise the 8-byte write.
+local function put_list(a, list)
+	local now = ptr(a)
+	if now and math.floor(now / 4294967296) == math.floor(list / 4294967296) then
+		local ok, how = put32(a, list % 4294967296)
+		if not ok then return false, how end
+		if ptr(a) ~= list then return false, "read-back differs" end
+		return true, how .. ", low 4 bytes"
+	end
+	return put64(a, list)
+end
+
+-- The copied pieces live in blocks placed in the same 4 GB window as the
+-- game's own lists, so put_list can take the 4-byte route. That window is
+-- nearly full in the real game (about 20 MB free, in holes of 64 KB to a few
+-- MB), so each block is a free hole found with VirtualQuery, up to 1 MB of it,
+-- and at most 4 MB per window (every armor at every rating is about 2 MB).
+-- Never freed: the game may still be reading an older copy. When no block can
+-- be placed, the copies go in Lua memory as before.
+local BLOCK, BUDGET, GRAIN, MEM_FREE = 0x100000, 0x400000, 0x10000, 0x10000
+local arenas = {}   -- top 4 bytes -> { at, size, used, total, cursor, full }
+local function arena_grow(a, hi, n)
+	local stop = (hi + 1) * 4294967296
+	while a.cursor < stop and a.total + n <= BUDGET do
+		if kernel.VirtualQuery(ffi.cast("void *", a.cursor), region, RSIZE) ~= RSIZE then return false end
+		local base = tonumber(ffi.cast("uintptr_t", region[0].base))
+		local after = math.min(base + tonumber(region[0].size), stop)
+		if after <= a.cursor then return false end
+		a.cursor = after
+		if region[0].state == MEM_FREE then
+			local at = base + (GRAIN - base % GRAIN) % GRAIN
+			local len = math.min(BLOCK, BUDGET - a.total, math.floor(math.max(after - at, 0) / GRAIN) * GRAIN)
+			if len >= n then
+				local got = kernel.VirtualAlloc(ffi.cast("void *", at), len, 0x3000, 0x04)
+				if got ~= nil and tonumber(ffi.cast("uintptr_t", got)) == at then
+					a.at, a.size, a.used, a.total = at, len, 0, a.total + len
+					if at + len < after then a.cursor = at + len end
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+local function arena_take(hi, n)
+	local a = arenas[hi]
+	if not a then a = { size = 0, used = 0, total = 0, cursor = hi * 4294967296 } arenas[hi] = a end
+	if a.used + n > a.size then
+		if a.full or not arena_grow(a, hi, n) then
+			if not a.full then
+				a.full = true
+				log(string.format("copy memory: no free room left in window 0x%X; further copies in Lua memory, records across a cache line keep their rating", hi))
+			end
+			return nil
+		end
+		log(string.format("copy memory: %d KB at 0x%X, next to the game's lists", a.size / 1024, a.at))
+	end
+	local at = a.at + a.used
+	a.used = a.used + n + (16 - n % 16) % 16
+	return at
+end
+
 -- ------------------------------------------------------------------ keys
 local pidbox = ffi.new("uint32_t[1]")
 local function game_focused()
@@ -223,6 +300,140 @@ local function nav_step(vk, repeats)
 	if not down then n = 0 elseif n ~= -1 then n = n + 1 end
 	nav[vk] = n
 	return (n == 1 or (repeats and n > 24 and n % 5 == 0)) and game_focused()
+end
+
+-- ------------------------------------------------------------------ controller
+-- Read only, never written to: XInput first, then a plain Windows joystick.
+-- Each read gives the same named buttons, so the grid treats both alike.
+-- While no pad is known the slots are tried every 15 frames at most (asking
+-- about an empty slot is slow on some systems). Declared one by one: another
+-- mod may have declared XInputGetState already, which would fail the lot.
+pcall(ffi.cdef, "typedef struct { uint32_t packet; uint16_t buttons; uint8_t lt, rt; int16_t lx, ly, rx, ry; } JarvisPPPad;")
+pcall(ffi.cdef, "typedef struct { uint32_t size, flags, x, y, z, r, u, v, buttons, count, pov, reserved1, reserved2; } JarvisPPJoy;")
+pcall(ffi.cdef, "uint32_t XInputGetState(uint32_t index, void *state);")
+pcall(ffi.cdef, "uint32_t joyGetPosEx(uint32_t id, void *info);")
+local PAD_NAMES = { "up", "down", "left", "right", "pick", "close", "set", "prev", "next", "open" }
+-- pad_open choices: right stick click, left stick click, Back/View, Start (XInput button bits)
+local PAD_OPEN = { 0x80, 0x40, 0x20, 0x10 }
+local STICK = 18000   -- how far a stick must lean to count as a direction, of 32767
+local pads = { tried = false, dead = false, kind = nil, index = nil, next_scan = 0, joy_from = 0, said = 0, joy_held = {} }
+local pad_buf = ffi.new("JarvisPPPad[1]")
+local joy_buf = ffi.new("JarvisPPJoy[1]")
+local pad_arg, joy_arg = ffi.cast("void *", pad_buf), ffi.cast("void *", joy_buf)
+
+local function pad_libs()
+	pads.tried = true
+	local function find(names, symbol)
+		for _, name in ipairs(names) do
+			local loaded, lib = pcall(ffi.load, name)
+			if loaded then
+				local ok, present = pcall(function () return lib[symbol] ~= nil end)
+				if ok and present then return lib, name end
+			end
+		end
+	end
+	local xname, jname
+	pads.xinput, xname = find({ "xinput1_4", "xinput1_3", "xinput9_1_0" }, "XInputGetState")
+	pads.winmm, jname = find({ "winmm" }, "joyGetPosEx")
+	log(string.format("controller: XInput %s, plain joysticks %s", xname or "not available", jname and "through winmm" or "not available"))
+end
+
+-- c = the settings in use
+local function xinput_read(i, c)
+	if pads.xinput.XInputGetState(i, pad_arg) ~= 0 then return nil end
+	local s = pad_buf[0]
+	local b, lx, ly = tonumber(s.buttons), tonumber(s.lx), tonumber(s.ly)
+	local function on(mask) return mask ~= nil and bit.band(b, mask) ~= 0 end
+	return { up = on(0x1) or ly > STICK, down = on(0x2) or ly < -STICK, left = on(0x4) or lx < -STICK,
+		right = on(0x8) or lx > STICK, pick = on(0x1000), close = on(0x2000), set = on(0x8000),
+		prev = on(0x100), next = on(0x200), open = on(PAD_OPEN[c.pad_open]) }
+end
+
+-- A plain joystick: buttons by number (as Windows counts them, from 1), the
+-- hat in hundredths of a degree (65535 = centred), the stick from 0 to 65535.
+local function joy_read(id, c)
+	local j = joy_buf[0]
+	j.size, j.flags = ffi.sizeof(joy_buf[0]), 0xFF
+	if pads.winmm.joyGetPosEx(id, joy_arg) ~= 0 then return nil end
+	local b, pov = tonumber(j.buttons), tonumber(j.pov)
+	local x, y = tonumber(j.x) - 32767, tonumber(j.y) - 32767
+	local function on(n) return n >= 1 and n <= 32 and bit.band(b, bit.lshift(1, n - 1)) ~= 0 end
+	local hat = pov <= 36000
+	-- the first buttons pressed go in the log, so a player can find their numbers
+	local now = {}
+	for n = 1, 32 do
+		if on(n) then
+			now[n] = true
+			if not pads.joy_held[n] and pads.said < 20 then
+				pads.said = pads.said + 1
+				log(string.format("controller: joystick button %d pressed", n))
+			end
+		end
+	end
+	pads.joy_held = now
+	return { up = (hat and (pov >= 31500 or pov <= 4500)) or y < -STICK, down = (hat and pov >= 13500 and pov <= 22500) or y > STICK,
+		left = (hat and pov >= 22500 and pov <= 31500) or x < -STICK, right = (hat and pov >= 4500 and pov <= 13500) or x > STICK,
+		pick = on(c.joy_pick), close = on(c.joy_close), set = on(c.joy_set), prev = on(c.joy_prev),
+		next = on(c.joy_next), open = on(c.joy_open) }
+end
+
+-- The pad's buttons this frame, or nil when there is none.
+local function pad_read(c)
+	if not pads.tried then pad_libs() end
+	if pads.kind then
+		local s
+		if pads.kind == "xinput" then s = xinput_read(pads.index, c) else s = joy_read(pads.index, c) end
+		if s then return s end
+		log(string.format("controller: %s %d gone", pads.kind == "xinput" and "XInput pad" or "joystick", pads.index))
+		pads.kind, pads.index, pads.next_scan = nil, nil, state.frames + 15
+		return nil
+	end
+	if state.frames < pads.next_scan then return nil end
+	pads.next_scan = state.frames + 15
+	if pads.xinput then
+		for i = 0, 3 do
+			local s = xinput_read(i, c)
+			if s then pads.kind, pads.index = "xinput", i; log("controller: XInput pad in slot " .. i) return s end
+		end
+	end
+	if pads.winmm then
+		-- four of the sixteen joystick ids per try, so all are seen within a second
+		for k = 0, 3 do
+			local id = (pads.joy_from + k) % 16
+			local s = joy_read(id, c)
+			if s then pads.kind, pads.index = "joy", id; log("controller: plain joystick " .. id .. " (no XInput pad)") return s end
+		end
+		pads.joy_from = (pads.joy_from + 4) % 16
+	end
+	return nil
+end
+
+-- Any doubt turns the controller off for the session; mouse and keys keep working.
+local function pad_sample(c)
+	if pads.dead then return nil end
+	local ok, s = pcall(pad_read, c)
+	if ok then return s end
+	pads.dead = true
+	log("controller: off for this session, " .. tostring(s))
+end
+
+-- The same step rule as the keys: one step on the press, then steps while
+-- held; a button marked -1 (held when the grid opened or closed) must be let go first.
+local pad_held = {}
+local function pad_step(s, name, repeats)
+	local down = s ~= nil and s[name] == true
+	local n = pad_held[name] or 0
+	if not down then n = 0 elseif n ~= -1 then n = n + 1 end
+	pad_held[name] = n
+	return (n == 1 or (repeats and n > 24 and n % 5 == 0)) and game_focused()
+end
+local function pad_block(all)
+	for _, name in ipairs(PAD_NAMES) do if all or name ~= "open" then pad_held[name] = -1 end end
+end
+local function pad_busy(s)
+	if not s then return false end
+	for _, name in ipairs(PAD_NAMES) do if s[name] then return true end end
+	return false
 end
 
 -- ------------------------------------------------------------------ signatures
@@ -387,16 +598,20 @@ local function resolve_input()
 	else log("input: key blocking off, " .. tostring(why)) end
 end
 
--- Keeps the game's menus from hearing the menu keys this frame. Any doubt
--- turns the feature off for the session; the grid keeps working.
+-- Keeps the game's menus from hearing the menu keys this frame. back = Back
+-- too (11), while a controller drives the grid, so the B that closes it does
+-- not also leave the screen. Any doubt turns the feature off for the session;
+-- the grid keeps working.
+local BACK = 11
 local block = { dead = false, frames = 0, said = false }
-local function block_keys()
+local function block_keys(back)
 	if block.dead or not input then return end
 	local ok, why = pcall(function ()
 		local holder = ptr(need(input.global, 8, "input global"))
 		if not holder then return end
 		need(holder, 0x340, "input singleton")
 		for _, action in ipairs(MENU_ACTIONS) do native.consume(input.fn, holder, action) end
+		if back then native.consume(input.fn, holder, BACK) end
 		block.frames = block.frames + 1
 		if not block.said then block.said = true; log(string.format("input: blocking the game's menu keys while the grid is open (singleton 0x%X)", holder)) end
 	end)
@@ -734,17 +949,21 @@ local function class_copy(rec, c)
 	local st = rec.stock
 	local n, k, want = #st.rated, units(st, c), {}
 	for j, slot in ipairs(st.rated) do want[slot] = (j <= k and 1 or 0) + (j <= k - n and 1 or 0) end
-	local list = ffi.new("uint64_t[?]", st.count * 3)
-	local keep = { list }
-	local lp = ffi.cast("uint8_t *", list)
+	local hi, keep = math.floor(st.list / 4294967296), {}
+	local function room(n)
+		local at = arena_take(hi, n)
+		if at then return ffi.cast("uint8_t *", at) end
+		local b = ffi.new("uint8_t[?]", n)
+		keep[#keep + 1] = b
+		return b
+	end
+	local lp = room(st.count * 24)
 	for b, body in ipairs(st.bodies) do
-		local pieces = ffi.new("uint64_t[?]", body.count * 12)
-		local pp = ffi.cast("uint8_t *", pieces)
+		local pp = room(body.count * 96)
 		ffi.copy(pp, body.raw, #body.raw)
 		for _, a in ipairs(body.armor) do
 			if want[a[2]] then ffi.cast("uint32_t *", pp + a[1] * 96 + 16)[0] = want[a[2]] end
 		end
-		keep[#keep + 1] = pieces
 		ffi.copy(lp + (b - 1) * 24, body.head, 24)
 		ffi.cast("uint64_t *", lp + (b - 1) * 24 + 8)[0] = ffi.cast("uintptr_t", pp)
 	end
@@ -753,7 +972,7 @@ local function class_copy(rec, c)
 	return copy
 end
 
--- c = a rating, or "own" for the armor's own pieces. One 8-byte write. A
+-- c = a rating, or "own" for the armor's own pieces. One pointer write. A
 -- rating the armor's pieces cannot make goes to the nearest one they can.
 local function set_class(rec, c)
 	if not rec.stock then log(rec.name .. ": no class change for this armor") return end
@@ -763,7 +982,7 @@ local function set_class(rec, c)
 	if before == nil then log(rec.name .. ": body list was changed by something else; class left alone") return end
 	if before == c then return end
 	local list = c == "own" and rec.stock.list or class_copy(rec, c).list
-	local ok, how = put64(rec.at + 48, list)
+	local ok, how = put_list(rec.at + 48, list)
 	if ok then
 		touched[rec.item] = rec
 		log(string.format("CLASS %s: %s -> %s (%s)", rec.name, class_text(rec, before), class_text(rec, c), how))
@@ -777,7 +996,7 @@ local function restore_all()
 		if readable(rec.at, 64) and u32(rec.at) == rec.item then
 			if u32(rec.at + 28) ~= rec.default then put32(rec.at + 28, rec.default) end
 			local c = class_now(rec)
-			if c ~= nil and c ~= "own" then put64(rec.at + 48, rec.stock.list) end
+			if c ~= nil and c ~= "own" then put_list(rec.at + 48, rec.stock.list) end
 		end
 	end
 	touched = {}
@@ -989,7 +1208,15 @@ local SETTINGS = {
 --@PERSONAL_BEGIN@
 	{ "redraw", 1, "1 = redraw the player card after a loadout preset switch so it shows the new items without flipping pages, 0 = off" },
 --@PERSONAL_END@
-	{ "block_keys", 1, "1 = keep W/A/S/D and Space away from the game's own menu while the grid is open, 0 = off" },
+	{ "block_keys", 1, "1 = keep W/A/S/D and Space (and the controller's buttons) away from the game's own menu while the grid is open, 0 = off" },
+	{ "pad", 1, "1 = a controller can open and use the grids, 0 = off (the controller is not read at all)" },
+	{ "pad_open", 1, "controller button that opens and closes the passive grid: 1 = right stick click, 2 = left stick click (DiverKit uses it too), 3 = Back/View, 4 = Start, 0 = none. In a grid: D-pad or left stick moves, A picks, B closes, Y hard sets, LB = rating grid, RB = passive grid" },
+	{ "joy_open", 12, "plain joystick only (a USB pad Windows does not show as an Xbox pad): button number that opens the grid. The log names each button you press" },
+	{ "joy_pick", 2, "plain joystick: button number that picks (A)" },
+	{ "joy_close", 3, "plain joystick: button number that closes the grid (B)" },
+	{ "joy_set", 4, "plain joystick: button number that hard sets (Y)" },
+	{ "joy_prev", 5, "plain joystick: button number for the rating grid (LB)" },
+	{ "joy_next", 6, "plain joystick: button number for the passive grid (RB)" },
 }
 local cfg, cfg_text, cfg_rev = {}, nil, 0
 for _, s in ipairs(SETTINGS) do cfg[s[1]] = s[2] end
@@ -1006,6 +1233,10 @@ local function parse_cfg(text)
 	out.set_key = math.max(0, math.min(255, math.floor(out.set_key)))
 	out.box_alpha = math.max(0, math.min(255, math.floor(out.box_alpha)))
 	out.grid_alpha = math.max(0, math.min(255, math.floor(out.grid_alpha)))
+	out.pad_open = math.max(0, math.min(4, math.floor(out.pad_open)))
+	for _, key in ipairs({ "joy_open", "joy_pick", "joy_close", "joy_set", "joy_prev", "joy_next" }) do
+		out[key] = math.max(0, math.min(32, math.floor(out[key])))
+	end
 	for _, key in ipairs({ "box_w", "box_h", "box_text", "cell_w", "cell_h", "grid_text", "class_w", "class_cell_w" }) do
 		out[key] = math.max(6, out[key])
 	end
@@ -1175,6 +1406,7 @@ end
 -- open, its grid. open = "passive", "class" or nil. Regions later in the list
 -- win a hit test.
 local TITLE_H = 20
+local RATING_BIG = 1.3   -- the rating grid's rows and text run this much larger than the passive grid's
 local function layout(card, list, gw, gh, open, drag, classes)
 	local s = card.w / 420
 	local out = { s = s, regions = {}, cells = {}, open = open }
@@ -1188,7 +1420,8 @@ local function layout(card, list, gw, gh, open, drag, classes)
 		local cols = open == "class" and 1 or cfg.grid_cols
 		local cw = open == "class" and cfg.class_cell_w or cfg.cell_w
 		local rows = math.max(1, math.ceil(#items / cols))
-		local w, h = cols * cw * s, (rows * cfg.cell_h + TITLE_H) * s
+		local ch = open == "class" and cfg.cell_h * RATING_BIG or cfg.cell_h
+		local w, h = cols * cw * s, (rows * ch + TITLE_H) * s
 		local dx, dy = moved("grid")
 		local x = clamp(card.x + cfg.grid_x * s + dx, 2, gw - w - 2)
 		local y = clamp(card.y + cfg.grid_y * s + dy, 2, gh - h - 2)
@@ -1196,8 +1429,8 @@ local function layout(card, list, gw, gh, open, drag, classes)
 		out.regions[#out.regions + 1] = out.grid
 		for i, v in ipairs(items) do
 			local col, row = math.floor((i - 1) / rows), (i - 1) % rows
-			local cell = { x = x + col * cw * s, y = y + h - TITLE_H * s - (row + 1) * cfg.cell_h * s,
-				w = cw * s, h = cfg.cell_h * s }
+			local cell = { x = x + col * cw * s, y = y + h - TITLE_H * s - (row + 1) * ch * s,
+				w = cw * s, h = ch * s }
 			if open == "class" then cell.key, cell.class = "c:" .. tostring(v), v
 			else cell.key, cell.enum = "p:" .. v, v end
 			out.cells[#out.cells + 1] = cell
@@ -1282,7 +1515,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 		gw, gh, handles.key, rec.item, current, rec.default, tostring(lay.grid ~= nil), tostring(hover), cfg_rev)
 		.. "|" .. tostring(class) .. "|" .. (kept and (tostring(kept.p) .. "," .. tostring(kept.c)) or "-")
 		.. string.format("|%.1f,%.1f|%.1f,%.1f|%s", lay.box.x, lay.box.y, lay.grid and lay.grid.x or 0, lay.grid and lay.grid.y or 0, tostring(lay.open))
-		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "")
+		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "") .. (ui.pad_mode and "|pad" or "")
 	if ui.world == target and ui.sig == sig then return end
 	ui_clear()
 	local gui = World.create_screen_gui(target, "scale", 1, 1)
@@ -1356,8 +1589,15 @@ local function draw(card, lay, handles, hover, gw, gh)
 		local grid = lay.grid
 		rect(grid, color(0, 0, 0, cfg.grid_alpha))
 		outline(grid, gold, t)
-		local title = lay.open == "class" and "ARMOR RATING   W S + SPACE"
-			or "ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE"
+		-- the keys of whatever was used last: the controller's, or the keyboard's
+		local title
+		if ui.pad_mode then
+			title = lay.open == "class" and "ARMOR RATING   A PICK   B CLOSE   RB PASSIVE"
+				or "ARMOR PASSIVE   (* = own)   A PICK   B CLOSE   Y SET   LB RATING"
+		else
+			title = lay.open == "class" and "ARMOR RATING   W S + SPACE"
+				or "ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE"
+		end
 		text(title, { x = grid.x, y = grid.y + grid.h - TITLE_H * s, w = grid.w, h = TITLE_H * s }, 12 * s, muted, 6 * s)
 		for _, cell in ipairs(lay.cells) do
 			if hover == cell.key then rect(cell, color(70, 70, 70, 255), 961) end
@@ -1370,8 +1610,14 @@ local function draw(card, lay, handles, hover, gw, gh)
 				label = passive_name(cell.enum)
 				if cell.enum == rec.default then label = label .. " *" end
 			end
-			if on then outline(cell, gold, t) end
-			text(label, cell, cfg.grid_text * s, on and gold or white, 6 * s)
+			-- the pick is a solid gold bar with dark text; the bar the cursor sits on gets a gold frame just outside it; the rating grid is centered and larger
+			if on then rect(cell, gold, 962) end
+			if hover == cell.key then
+				local frame = math.max(2, 2 * s)
+				outline({ x = cell.x - frame, y = cell.y - frame, w = cell.w + 2 * frame, h = cell.h + 2 * frame }, gold, frame)
+			end
+			local rating = cell.class ~= nil
+			text(label, cell, cfg.grid_text * (rating and RATING_BIG or 1) * s, on and color(12, 12, 12) or white, 6 * s, rating)
 		end
 	end
 	ui.sig = sig
@@ -1429,6 +1675,8 @@ local function ui_hide()
 	ui_clear()
 	ui.visible, ui.open, ui.previous, ui.armed, ui.sel = false, nil, nil, nil, nil
 	ui.press, ui.drag, ui.was_down = nil, nil, nil
+	-- a pad button held while the card comes back must be let go first
+	pad_block(true)
 end
 
 local function ui_step()
@@ -1455,6 +1703,11 @@ local function ui_step()
 	local function relayout() return layout(card, list, gw, gh, ui.open, nil, classes) end
 	local lay = layout(card, list, gw, gh, ui.open, ui.drag, classes)
 	local sample = pointer_sample(gw, gh)
+	-- the controller: any of its buttons makes it the one the grid's title speaks
+	-- for, until the mouse really moves
+	local pad = cfg.pad ~= 0 and pad_sample(cfg) or nil
+	if pad_busy(pad) then ui.pad_mode = true
+	elseif ui.pad_mode and sample and ui.mx and math.abs(sample.x - ui.mx) + math.abs(sample.y - ui.my) > 4 then ui.pad_mode = false end
 	local hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	local clicked = pointer_step(sample, hover or (ui.open and sample and "outside") or nil)
 	-- a press on a box or on the grid's own background that then moves is a drag, not a click
@@ -1493,6 +1746,12 @@ local function ui_step()
 		lay = relayout()
 		hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	end
+	-- the controller's open button opens the passive grid, or closes whichever is open
+	if pad_step(pad, "open", false) then
+		ui.open, ui.sel = not ui.open and "passive" or nil, nil
+		lay = relayout()
+		hover = sample and hit(lay.regions, sample.x, sample.y) or nil
+	end
 	if ui.open then
 		-- one highlight, moved by the mouse or by W/A/S/D; Space picks it
 		local items = ui.open == "class" and classes or list
@@ -1517,33 +1776,58 @@ local function ui_step()
 		local rows = math.max(1, math.ceil(#items / cols_wanted))
 		local cols = math.ceil(#items / rows)
 		local col, row = math.floor((sel - 1) / rows), (sel - 1) % rows
-		if nav_step(VK_W, true) then
+		-- every key and button is stepped each frame, so none misses its press
+		local kw, ks, ka, kd = nav_step(VK_W, true), nav_step(VK_S, true), nav_step(VK_A, true), nav_step(VK_D, true)
+		local pu, pd, pl, pr = pad_step(pad, "up", true), pad_step(pad, "down", true), pad_step(pad, "left", true), pad_step(pad, "right", true)
+		local kpick, ppick, pclose = nav_step(VK_SPACE, false), pad_step(pad, "pick", false), pad_step(pad, "close", false)
+		local pset, pprev, pnext = pad_step(pad, "set", false), pad_step(pad, "prev", false), pad_step(pad, "next", false)
+		if kw or ks or ka or kd or kpick then ui.pad_mode = false end
+		if kw or pu then
 			row = row - 1
 			if row < 0 then row = rows - 1 end
 		end
-		if nav_step(VK_S, true) then
+		if ks or pd then
 			row = row + 1
 			if row >= rows or col * rows + row + 1 > #items then row = 0 end
 		end
-		if nav_step(VK_A, true) then col = (col - 1) % cols end
-		if nav_step(VK_D, true) then col = (col + 1) % cols end
+		if ka or pl then col = (col - 1) % cols end
+		if kd or pr then col = (col + 1) % cols end
 		sel = math.max(1, math.min(#items, col * rows + row + 1))
 		ui.sel = sel
-		if nav_step(VK_SPACE, false) then
+		if pset then hard_set(card.rec) end
+		local switch = (pprev and #classes > 0 and "class") or (pnext and "passive") or nil
+		if kpick or ppick then
 			if ui.open == "class" then apply_class(card.rec, items[sel]) else apply_pick(card.rec, items[sel]) end
 			ui.open, ui.sel = nil, nil
+		elseif pclose then
+			ui.open, ui.sel = nil, nil
+		elseif switch and switch ~= ui.open then
+			ui.open, ui.sel = switch, nil
+		end
+		if not ui.open or switch then
 			lay = relayout()
 			hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 		else
 			hover = (ui.open == "class" and "c:" or "p:") .. tostring(items[sel])
 		end
-	else
+	end
+	if not ui.open then
 		ui.sel = nil
 		nav_block()
+		pad_block(false)
 	end
 	-- while the grid is open, and a few frames after it closes so the key that closed it is not heard either
-	if ui.open then ui.block_until = state.frames + 10 end
-	if cfg.block_keys ~= 0 and ui.block_until and state.frames <= ui.block_until then block_keys() end
+	-- (for as long as a pad button stays held); Back as well while the controller drives it
+	if ui.open then
+		ui.block_until = state.frames + 10
+		if ui.pad_mode then ui.back_until = state.frames + 10 end
+	elseif ui.block_until and state.frames <= ui.block_until and pad_busy(pad) then
+		ui.block_until = state.frames + 10
+		if ui.back_until and state.frames <= ui.back_until then ui.back_until = state.frames + 10 end
+	end
+	if cfg.block_keys ~= 0 and ui.block_until and state.frames <= ui.block_until then
+		block_keys(ui.back_until ~= nil and state.frames <= ui.back_until)
+	end
 	if sample then ui.mx, ui.my = sample.x, sample.y end
 	-- held from the moment the mouse is on the box, so DiverKit sees neither the press nor the release
 	local busy = ui.open or hover ~= nil or ui.drag ~= nil or (sample ~= nil and sample.down and ui.armed ~= nil)
@@ -1644,7 +1928,7 @@ local function tick()
 		if owned and total > 0 then
 			report_owned(owned, total, count)
 			apply_saved()
-			log("DISCOVERY OK - on the player card: click the box. Keys: F6 (set_key) = hard set the worn armor's class and passive")
+			log("DISCOVERY OK - on the player card: click the box, or the controller's right stick (pad_open). Keys: F6 (set_key) = hard set the worn armor's class and passive")
 			phase = "watch"
 		else
 			retries = retries + 1
@@ -1667,8 +1951,9 @@ local function tick()
 			log("redraw: off for this session, " .. tostring(why))
 		end
 --@PERSONAL_END@
+		-- the worn armor is read twice a second on the loadout screen, once a second elsewhere (in a mission)
 		local set = cfg.set_key >= 1 and pressed(cfg.set_key)
-		if set or state.frames % 30 == 0 then
+		if set or state.frames % (ui.visible and 30 or 60) == 0 then
 			local text, rec = read_loadout()
 			if rec and set then hard_set(rec)
 			elseif set then log("key ignored: " .. text) end
@@ -1685,16 +1970,42 @@ local function tick()
 	end
 end
 
-rawset(_G, "update", function (...)
-	local r = { pcall(previous_update, ...) }
+-- The mod's own cost: only tick() is timed (not the game's or other mods'
+-- updates, which this wrapper also calls), and the average is logged once a
+-- minute, so a frame-time tool's number can be checked against it.
+local qpc = ffi.new("int64_t[1]")
+local rate = (pcall(function () return kernel.QueryPerformanceFrequency(qpc) end) and tonumber(qpc[0]) or 0)
+local function now() kernel.QueryPerformanceCounter(qpc) return tonumber(qpc[0]) end
+local cost = { spent = 0, worst = 0, frames = 0 }
+if rate <= 0 or not pcall(now) then rate = 0 end
+local function timed_tick()
+	if rate == 0 then return pcall(tick) end
+	local t0 = now()
 	local ok, err = pcall(tick)
-	if not ok then
+	local t1 = now()
+	local d = t1 - t0
+	cost.spent, cost.frames = cost.spent + d, cost.frames + 1
+	if d > cost.worst then cost.worst = d end
+	cost.from = cost.from or t0
+	if t1 - cost.from >= 60 * rate then
+		log(string.format("cost: own work %.3f ms per second over %.0f s (%d frames, worst frame %.3f ms)",
+			cost.spent * 1000 / (t1 - cost.from), (t1 - cost.from) / rate, cost.frames, cost.worst * 1000 / rate))
+		cost.spent, cost.worst, cost.frames, cost.from = 0, 0, 0, t1
+	end
+	return ok, err
+end
+
+-- after the game's own update (and the mods before this one) has run
+local function after(ok, ...)
+	local fine, err = timed_tick()
+	if not fine then
 		log("stopped on error: " .. tostring(err))
 		phase = "dead"
 	end
-	if not r[1] then error(r[2], 0) end
-	return unpack(r, 2, table.maxn(r))
-end)
+	if not ok then error((...), 0) end
+	return ...
+end
+rawset(_G, "update", function (...) return after(pcall(previous_update, ...)) end)
 
 local previous_shutdown = rawget(_G, "shutdown")
 if type(previous_shutdown) == "function" then
