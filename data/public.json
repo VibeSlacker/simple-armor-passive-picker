@@ -3,12 +3,12 @@
  "author": "vibeslacker",
  "replace": [
   {
-   "from": "-- Passive Picker, test build 0.32, for Bingus Shared Loader v15+.",
-   "to": "-- Passive Picker 1.3.0, for Bingus Shared Loader v15+."
+   "from": "-- Passive Picker, test build 0.33, for Bingus Shared Loader v15+.",
+   "to": "-- Passive Picker 1.4.1, for Bingus Shared Loader v15+."
   },
   {
-   "from": "local REVISION = \"Passive Picker test 0.32\"",
-   "to": "local REVISION = \"Passive Picker 1.3.0\""
+   "from": "local REVISION = \"Passive Picker test 0.33\"",
+   "to": "local REVISION = \"Passive Picker 1.4.1\""
   },
   {
    "from": "-- DiverKit is held still (its own \"visible\" flag is cleared, which makes it\n-- skip its frame; its panel stays drawn) and a click here cannot also press one\n-- of its buttons. hold_diverkit = 0 in the settings file turns that off.",
@@ -41,6 +41,10 @@
   {
    "from": "{ \"grid_alpha\", 238, \"grid: how solid its black background is (0 = see-through, 255 = solid)\" }",
    "to": "{ \"grid_alpha\", 170, \"grid: how solid its black background is (0 = see-through, 255 = solid)\" }"
+  },
+  {
+   "from": "{ \"pad_open_rating\", 0, \"controller button that opens and closes the rating grid, chosen like pad_open (0 = none, and it must not be the same as pad_open; 2 = left stick click is what DiverKit uses, so it is off in this build). Can also be set on the MODS tab of the game's binding pages when Mod Bindings Menu is installed\" }",
+   "to": "{ \"pad_open_rating\", 2, \"controller button that opens and closes the rating grid, chosen like pad_open (0 = none, and it must not be the same as pad_open; 2 = left stick click). Can also be set on the MODS tab of the game's binding pages when Mod Bindings Menu is installed\" }"
   }
  ],
  "name": "Simple Armor Passive Picker",

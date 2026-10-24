@@ -1,5 +1,5 @@
 -- HD2-Addon: mods/jarvis/passive_picker
--- Passive Picker, test build 0.32, for Bingus Shared Loader v15+.
+-- Passive Picker, test build 0.33, for Bingus Shared Loader v15+.
 --
 -- Picks the armor rating (50 light to 150 heavy) and the passive of the armor
 -- worn on the pre-mission loadout screen, from two clickable boxes of the same
@@ -15,7 +15,11 @@
 -- A controller works too, read the way DiverKit and HD2 Transmog read theirs
 -- (XInput: Xbox pads and every pad Steam Input hands the game; else a plain
 -- Windows joystick, for a USB pad that only shows up as one). The right stick
--- click opens and closes the passive grid (pad_open in the settings file);
+-- click opens and closes the passive grid (pad_open in the settings file) and
+-- the left stick click opens the rating grid (pad_open_rating); both, and the
+-- hard set, can be rebound on the MODS tab of the game's binding pages when
+-- Mod Bindings Menu is installed (a row used there replaces the settings-file
+-- button for the session);
 -- with a grid open the D-pad or the left stick moves the highlight, A picks,
 -- B closes, Y hard sets (as F6 does), LB goes to the rating grid and RB to the
 -- passive grid. A plain joystick's buttons are set by number in the settings
@@ -81,7 +85,7 @@
 --                    card+0x1b820 (used as the anchor for the box)
 
 if rawget(_G, "JarvisPassivePicker") then return true end
-local REVISION = "Passive Picker test 0.32"
+local REVISION = "Passive Picker test 0.33"
 local state = { revision = REVISION, frames = 0, status = "starting" }
 rawset(_G, "JarvisPassivePicker", state)
 
@@ -312,7 +316,7 @@ pcall(ffi.cdef, "typedef struct { uint32_t packet; uint16_t buttons; uint8_t lt,
 pcall(ffi.cdef, "typedef struct { uint32_t size, flags, x, y, z, r, u, v, buttons, count, pov, reserved1, reserved2; } JarvisPPJoy;")
 pcall(ffi.cdef, "uint32_t XInputGetState(uint32_t index, void *state);")
 pcall(ffi.cdef, "uint32_t joyGetPosEx(uint32_t id, void *info);")
-local PAD_NAMES = { "up", "down", "left", "right", "pick", "close", "set", "prev", "next", "open" }
+local PAD_NAMES = { "up", "down", "left", "right", "pick", "close", "set", "prev", "next", "open", "open_rating" }
 -- pad_open choices: right stick click, left stick click, Back/View, Start (XInput button bits)
 local PAD_OPEN = { 0x80, 0x40, 0x20, 0x10 }
 local STICK = 18000   -- how far a stick must lean to count as a direction, of 32767
@@ -346,7 +350,7 @@ local function xinput_read(i, c)
 	local function on(mask) return mask ~= nil and bit.band(b, mask) ~= 0 end
 	return { up = on(0x1) or ly > STICK, down = on(0x2) or ly < -STICK, left = on(0x4) or lx < -STICK,
 		right = on(0x8) or lx > STICK, pick = on(0x1000), close = on(0x2000), set = on(0x8000),
-		prev = on(0x100), next = on(0x200), open = on(PAD_OPEN[c.pad_open]) }
+		prev = on(0x100), next = on(0x200), open = on(PAD_OPEN[c.pad_open]), open_rating = on(PAD_OPEN[c.pad_open_rating]) }
 end
 
 -- A plain joystick: buttons by number (as Windows counts them, from 1), the
@@ -374,7 +378,7 @@ local function joy_read(id, c)
 	return { up = (hat and (pov >= 31500 or pov <= 4500)) or y < -STICK, down = (hat and pov >= 13500 and pov <= 22500) or y > STICK,
 		left = (hat and pov >= 22500 and pov <= 31500) or x < -STICK, right = (hat and pov >= 4500 and pov <= 13500) or x > STICK,
 		pick = on(c.joy_pick), close = on(c.joy_close), set = on(c.joy_set), prev = on(c.joy_prev),
-		next = on(c.joy_next), open = on(c.joy_open) }
+		next = on(c.joy_next), open = on(c.joy_open), open_rating = on(c.joy_open_rating) }
 end
 
 -- The pad's buttons this frame, or nil when there is none.
@@ -428,12 +432,68 @@ local function pad_step(s, name, repeats)
 	return (n == 1 or (repeats and n > 24 and n % 5 == 0)) and game_focused()
 end
 local function pad_block(all)
-	for _, name in ipairs(PAD_NAMES) do if all or name ~= "open" then pad_held[name] = -1 end end
+	for _, name in ipairs(PAD_NAMES) do if all or (name ~= "open" and name ~= "open_rating") then pad_held[name] = -1 end end
 end
 local function pad_busy(s)
 	if not s then return false end
 	for _, name in ipairs(PAD_NAMES) do if s[name] then return true end end
 	return false
+end
+
+-- The rows on the game's bindings pages, through Mod Bindings Menu (optional; the
+-- same way Chaos Divers does it). Registration is retried once a 60 frames for
+-- 60 tries, since addons load in no fixed order. is_down is a level; the edge is
+-- worked out here, once a frame in menu_poll. A row first used there replaces the
+-- settings-file button (or key) of the same name until the game restarts; a row
+-- left empty changes nothing.
+local MENU_CATEGORY = "Passive Picker"
+local MENU_ROWS = {
+	{ name = "open", id = "vibeslacker.sapp.open_passive", label = "Open Passive Grid" },
+	{ name = "open_rating", id = "vibeslacker.sapp.open_rating", label = "Open Rating Grid" },
+	{ name = "hard_set", id = "vibeslacker.sapp.hard_set", label = "Hard Set Armor" },
+}
+local menu = { tries = 0, next_try = 0, pending = #MENU_ROWS, edge = {}, taken = {} }
+local function menu_api()
+	local m = rawget(_G, "ModBindingsMenu")
+	if type(m) ~= "table" or rawget(m, "api") ~= 1 or type(rawget(m, "version")) ~= "number" or m.version < 2 then return nil end
+	return m
+end
+local function menu_poll()
+	menu.edge = {}
+	local m = menu_api()
+	if not m then return end
+	if menu.pending > 0 and menu.tries < 60 and state.frames >= menu.next_try then
+		menu.next_try, menu.tries = state.frames + 60, menu.tries + 1
+		for _, row in ipairs(MENU_ROWS) do
+			if not row.done then
+				local ok, accepted, why = pcall(m.register_binding, row.id, row.label, nil, { category = MENU_CATEGORY })
+				if ok and accepted == true then
+					row.done, menu.pending = true, menu.pending - 1
+					log("bindings: \"" .. row.label .. "\" is on the game's bindings page under MODS > " .. MENU_CATEGORY:upper())
+				else
+					local note = "bindings: the page refused \"" .. row.label .. "\" (" .. tostring(ok and why or accepted) .. ")"
+					if note ~= row.last then row.last = note; log(note) end
+				end
+			end
+		end
+	end
+	for _, row in ipairs(MENU_ROWS) do
+		if row.done then
+			local ok, down = pcall(m.is_down, row.id)
+			if not ok or down == nil then row.was = nil
+			else
+				down = down == true
+				if down and row.was == false and game_focused() then
+					menu.edge[row.name] = true
+					if not menu.taken[row.name] then
+						menu.taken[row.name] = true
+						log("bindings: \"" .. row.label .. "\" was used; only it counts from now on (the settings-file button is ignored until the game restarts)")
+					end
+				end
+				row.was = down
+			end
+		end
+	end
 end
 
 -- ------------------------------------------------------------------ signatures
@@ -1211,10 +1271,12 @@ local SETTINGS = {
 	{ "block_keys", 1, "1 = keep W/A/S/D and Space (and the controller's buttons) away from the game's own menu while the grid is open, 0 = off" },
 	{ "pad", 1, "1 = a controller can open and use the grids, 0 = off (the controller is not read at all)" },
 	{ "pad_open", 1, "controller button that opens and closes the passive grid: 1 = right stick click, 2 = left stick click (DiverKit uses it too), 3 = Back/View, 4 = Start, 0 = none. In a grid: D-pad or left stick moves, A picks, B closes, Y hard sets, LB = rating grid, RB = passive grid" },
+	{ "pad_open_rating", 0, "controller button that opens and closes the rating grid, chosen like pad_open (0 = none, and it must not be the same as pad_open; 2 = left stick click is what DiverKit uses, so it is off in this build). Can also be set on the MODS tab of the game's binding pages when Mod Bindings Menu is installed" },
 	{ "joy_open", 12, "plain joystick only (a USB pad Windows does not show as an Xbox pad): button number that opens the grid. The log names each button you press" },
 	{ "joy_pick", 2, "plain joystick: button number that picks (A)" },
 	{ "joy_close", 3, "plain joystick: button number that closes the grid (B)" },
 	{ "joy_set", 4, "plain joystick: button number that hard sets (Y)" },
+	{ "joy_open_rating", 0, "plain joystick: button number that opens the rating grid (0 = none)" },
 	{ "joy_prev", 5, "plain joystick: button number for the rating grid (LB)" },
 	{ "joy_next", 6, "plain joystick: button number for the passive grid (RB)" },
 }
@@ -1234,9 +1296,13 @@ local function parse_cfg(text)
 	out.box_alpha = math.max(0, math.min(255, math.floor(out.box_alpha)))
 	out.grid_alpha = math.max(0, math.min(255, math.floor(out.grid_alpha)))
 	out.pad_open = math.max(0, math.min(4, math.floor(out.pad_open)))
-	for _, key in ipairs({ "joy_open", "joy_pick", "joy_close", "joy_set", "joy_prev", "joy_next" }) do
+	out.pad_open_rating = math.max(0, math.min(4, math.floor(out.pad_open_rating)))
+	for _, key in ipairs({ "joy_open", "joy_open_rating", "joy_pick", "joy_close", "joy_set", "joy_prev", "joy_next" }) do
 		out[key] = math.max(0, math.min(32, math.floor(out[key])))
 	end
+	-- one button cannot open both grids
+	if out.pad_open_rating == out.pad_open then out.pad_open_rating = 0 end
+	if out.joy_open_rating == out.joy_open then out.joy_open_rating = 0 end
 	for _, key in ipairs({ "box_w", "box_h", "box_text", "cell_w", "cell_h", "grid_text", "class_w", "class_cell_w" }) do
 		out[key] = math.max(6, out[key])
 	end
@@ -1340,6 +1406,10 @@ end
 -- A surface keeps what was drawn on it, so it is only rebuilt when something
 -- visible changes.
 local engine = rawget(_G, "stingray")
+-- the hover description: its text (passive number -> lines), and how many seconds the cursor
+-- (or the pad's highlight) rests on a passive before it shows
+local TIP = { delay = 0.5, desc = --@DESCS@ }
+TIP.wall = os.clock   -- the same clock the slicer above trusts
 local ui = { open = false, dead = false, visible = false, notes = 0 }
 
 local function id_hex(a)   -- the 8 bytes at a as 16 hex digits
@@ -1501,7 +1571,7 @@ local function pointer_step(sample, over)
 	return clicked
 end
 
-local function draw(card, lay, handles, hover, gw, gh)
+local function draw(card, lay, handles, hover, gw, gh, tip)
 	local App, World, Gui = engine.Application, engine.World, engine.Gui
 	local target
 	local main = App.main_world()
@@ -1515,7 +1585,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 		gw, gh, handles.key, rec.item, current, rec.default, tostring(lay.grid ~= nil), tostring(hover), cfg_rev)
 		.. "|" .. tostring(class) .. "|" .. (kept and (tostring(kept.p) .. "," .. tostring(kept.c)) or "-")
 		.. string.format("|%.1f,%.1f|%.1f,%.1f|%s", lay.box.x, lay.box.y, lay.grid and lay.grid.x or 0, lay.grid and lay.grid.y or 0, tostring(lay.open))
-		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "") .. (ui.pad_mode and "|pad" or "")
+		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "") .. (ui.pad_mode and "|pad" or "") .. "|tip=" .. tostring(tip)
 	if ui.world == target and ui.sig == sig then return end
 	ui_clear()
 	local gui = World.create_screen_gui(target, "scale", 1, 1)
@@ -1550,7 +1620,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 		return engine.Vector2.x(hi) - engine.Vector2.x(lo), engine.Vector2.x(lo)
 	end
 	-- one line of text inside r, shrunk to fit its width; middle = centered, else from the left
-	local function text(value, r, size, c, pad, middle)
+	local function text(value, r, size, c, pad, middle, z)
 		local room = r.w - 2 * pad
 		local lo, hi = Gui.text_extents(gui, value, font, size)
 		if lo and hi then
@@ -1563,7 +1633,7 @@ local function draw(card, lay, handles, hover, gw, gh)
 			x = math.max(x, r.x + (r.w - width) / 2 - left)
 		end
 		Gui.text(gui, value, font, size, material,
-			engine.Vector3(x, r.y + (r.h - size * 0.7) / 2, 963), c)
+			engine.Vector3(x, r.y + (r.h - size * 0.7) / 2, z or 963), c)
 	end
 	local function centered(value, r, baseline, size, c)
 		local width, left = measure(value, size)
@@ -1618,6 +1688,48 @@ local function draw(card, lay, handles, hover, gw, gh)
 			end
 			local rating = cell.class ~= nil
 			text(label, cell, cfg.grid_text * (rating and RATING_BIG or 1) * s, on and color(12, 12, 12) or white, 6 * s, rating)
+		end
+	end
+	if tip then
+		-- the description panel: just right of the grid, top level with the highlighted row (right of the box when the grid is closed); on the left when the screen has no room below
+		local enum = tip == "box" and current or tonumber(tip:sub(3))
+		local size, head = cfg.grid_text * s, (cfg.grid_text + 2) * s
+		local pw = 280 * s
+		local room = pw - 16 * s
+		local lines = {}
+		for _, para in ipairs(TIP.desc[enum] or { "No description." }) do
+			local line = "-"
+			for word in para:gmatch("%S+") do
+				local try = line .. " " .. word
+				if line ~= "-" and line ~= "" and measure(try, size) > room then
+					lines[#lines + 1] = line
+					line = word
+				else
+					line = try
+				end
+			end
+			lines[#lines + 1] = line
+		end
+		local lh = size * 1.5
+		local ph = 8 * s + head * 1.6 + #lines * lh
+		local row, edge = lay.box, lay.box
+		if lay.grid then
+			edge = lay.grid
+			for _, cell in ipairs(lay.cells) do if cell.key == tip then row = cell end end
+		end
+		local px, py = edge.x + edge.w + 8 * s, row.y + row.h - ph
+		if px + pw > gw then px = edge.x - pw - 8 * s end
+		px = math.max(0, math.min(px, gw - pw))
+		py = math.max(0, math.min(py, gh - ph))
+		local panel = { x = px, y = py, w = pw, h = ph }
+		rect(panel, color(0, 0, 0, math.max(cfg.grid_alpha, 235)), 970)
+		for _, r in ipairs({ { panel.x, panel.y, panel.w, t }, { panel.x, panel.y + panel.h - t, panel.w, t },
+				{ panel.x, panel.y, t, panel.h }, { panel.x + panel.w - t, panel.y, t, panel.h } }) do
+			rect({ x = r[1], y = r[2], w = r[3], h = r[4] }, gold, 971)
+		end
+		text(passive_name(enum), { x = panel.x, y = panel.y + panel.h - head * 1.6 - 4 * s, w = panel.w, h = head * 1.6 }, head, gold, 8 * s, false, 972)
+		for i, line in ipairs(lines) do
+			text(line, { x = panel.x, y = panel.y + panel.h - head * 1.6 - 4 * s - i * lh, w = panel.w, h = lh }, size, white, 8 * s, false, 972)
 		end
 	end
 	ui.sig = sig
@@ -1746,9 +1858,15 @@ local function ui_step()
 		lay = relayout()
 		hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	end
-	-- the controller's open button opens the passive grid, or closes whichever is open
-	if pad_step(pad, "open", false) then
-		ui.open, ui.sel = not ui.open and "passive" or nil, nil
+	-- the controller's open button (or its row on the bindings page) opens the passive grid, or closes
+	-- whichever is open; the rating button opens the rating grid, or closes it, or switches to it from the passive grid
+	local open_pass = pad_step(pad, "open", false) and not menu.taken.open or menu.edge.open
+	local open_rate = pad_step(pad, "open_rating", false) and not menu.taken.open_rating or menu.edge.open_rating
+	if open_pass or open_rate then
+		if open_pass then ui.open = not ui.open and "passive" or nil
+		elseif ui.open == "class" then ui.open = nil
+		elseif #classes > 0 then ui.open = "class" end
+		ui.sel = nil
 		lay = relayout()
 		hover = sample and hit(lay.regions, sample.x, sample.y) or nil
 	end
@@ -1833,7 +1951,12 @@ local function ui_step()
 	local busy = ui.open or hover ~= nil or ui.drag ~= nil or (sample ~= nil and sample.down and ui.armed ~= nil)
 	if cfg.hold_diverkit ~= 0 and busy then hold_diverkit(true)
 	elseif not (sample and sample.down) then hold_diverkit(false) end
-	draw(card, lay, ui.handles, hover, gw, gh)
+	-- the description: after the cursor (or the highlight) has rested on one passive for TIP_DELAY seconds
+	local tip_key = hover and ui.open ~= "class" and not ui.drag and not ui.press and (hover == "box" or hover:find("^p:")) and hover or nil
+	if tip_key ~= ui.tip_key then ui.tip_key, ui.tip_at, ui.tip_shown = tip_key, tip_key and TIP.wall() or nil, false end
+	if tip_key and not ui.tip_shown and TIP.wall() - ui.tip_at >= TIP.delay then ui.tip_shown = true end
+	local tip = tip_key and ui.tip_shown and tip_key or nil
+	draw(card, lay, ui.handles, hover, gw, gh, tip)
 end
 
 -- for the offline test harness only
@@ -1928,7 +2051,7 @@ local function tick()
 		if owned and total > 0 then
 			report_owned(owned, total, count)
 			apply_saved()
-			log("DISCOVERY OK - on the player card: click the box, or the controller's right stick (pad_open). Keys: F6 (set_key) = hard set the worn armor's class and passive")
+			log("DISCOVERY OK - on the player card: click the box, or the controller's right stick (pad_open) for passives and left stick (pad_open_rating) for the rating grid; both rebindable on the MODS tab. Keys: F6 (set_key) = hard set the worn armor's class and passive")
 			phase = "watch"
 		else
 			retries = retries + 1
@@ -1936,6 +2059,7 @@ local function tick()
 			wait = 180
 		end
 	elseif phase == "watch" then
+		menu_poll()
 		if not ui.dead then
 			local ok, err = pcall(ui_step)
 			if not ok then
@@ -1952,7 +2076,7 @@ local function tick()
 		end
 --@PERSONAL_END@
 		-- the worn armor is read twice a second on the loadout screen, once a second elsewhere (in a mission)
-		local set = cfg.set_key >= 1 and pressed(cfg.set_key)
+		local set = (cfg.set_key >= 1 and pressed(cfg.set_key)) or menu.edge.hard_set
 		if set or state.frames % (ui.visible and 30 or 60) == 0 then
 			local text, rec = read_loadout()
 			if rec and set then hard_set(rec)

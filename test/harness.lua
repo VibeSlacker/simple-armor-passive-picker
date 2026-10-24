@@ -303,7 +303,7 @@ rawset(_G, "stingray", {
 		resolution = function () return 1920, 1080 end,
 		material = function () return {} end,
 		rect = function (g, pos, size) g.rects[#g.rects + 1] = { x = pos[1], y = pos[2], w = size[1], h = size[2] } end,
-		text = function (g, value, _, size, _, pos) g.texts[#g.texts + 1] = { text = value, size = size, x = pos[1], y = pos[2] } end,
+		text = function (g, value, _, size, _, pos) g.texts[#g.texts + 1] = { text = value, size = size, x = pos[1], y = pos[2], z = pos[3] } end,
 		text_extents = function (_, value, _, size) return { 0, 0 }, { #value * size * 0.55, size } end,
 	},
 	Material = { set_scalar = function () end, set_vector2 = function () end, set_vector4 = function () end, set_texture = function () end },
@@ -341,7 +341,8 @@ assert(assert(loadfile(built))() == true)
 local update = rawget(_G, "update")
 local function run(n) for _ = 1, n do update() end end
 local function surface() local g, count = nil, 0 for s in pairs(live) do g = s count = count + 1 end return g, count end
-local function find_text(g, value) for _, t in ipairs(g and g.texts or {}) do if t.text == value then return t end end end
+-- the description panel (text at z 972) is left out: its heading repeats the passive's name
+local function find_text(g, value) for _, t in ipairs(g and g.texts or {}) do if t.text == value and (t.z or 0) < 972 then return t end end end
 local function point_at(gx, gy) mouse.x, mouse.y = math.floor(gx), math.floor(1080 - gy) end
 local function click_at(gx, gy)
 	point_at(gx, gy); mouse.down = false; run(2); mouse.down = true; run(2); mouse.down = false; run(2)
@@ -1000,6 +1001,69 @@ else
 	local fresh = log_text():sub(before_logs + 1)
 	check(fresh:find("controller: XInput pad in slot 0", 1, true) and not fresh:find("plain joystick", 1, true), "with both plugged in the XInput pad wins")
 	pad.slot, joy.id = nil, nil; run(3)
+	print("the left stick click and the bindings page")
+	local L3 = 0x40
+	local function rating_open() return find_text(surface(), "ARMOR RATING   A PICK   B CLOSE   RB PASSIVE") ~= nil or find_text(surface(), "ARMOR RATING   W S + SPACE") ~= nil end
+	local function passive_open() return pad_grid() or is_open() end
+	local function count_of(text) local k, at = 0, 1 while true do local a, b = log_text():find(text, at, true) if not a then return k end k, at = k + 1, b + 1 end end
+	pad.slot = 1; run(16)
+	if public then
+		ptap(L3)
+		check(rating_open() and not passive_open(), "public: L3 opens the rating grid")
+		ptap(L3)
+		check(not rating_open() and not passive_open(), "and L3 closes it")
+		ptap(R3)
+		check(passive_open() and not rating_open(), "R3 still opens the passive grid")
+		ptap(L3)
+		check(rating_open() and not passive_open(), "L3 from the passive grid switches to the rating grid")
+		ptap(R3)
+		check(not rating_open() and not passive_open(), "and R3 closes whichever is open")
+	else
+		ptap(L3)
+		check(not rating_open() and not passive_open(), "personal: L3 does nothing by default (DiverKit uses it)")
+		f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("pad_open_rating = 2\r\n"); f:close(); run(130)
+		ptap(L3)
+		check(rating_open() and not passive_open(), "personal: pad_open_rating = 2 makes L3 open the rating grid")
+		ptap(L3)
+		check(not rating_open(), "and closes it")
+		f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
+	end
+	check(picker.test.parse_cfg("pad_open_rating = 1").pad_open_rating == 0, "the same button cannot open both grids")
+	check(picker.test.parse_cfg("pad_open_rating = 9").pad_open_rating == 4 and picker.test.parse_cfg("joy_open_rating = 99").joy_open_rating == 32, "rating button settings clamped")
+	-- the game's bindings page (Mod Bindings Menu), installed late
+	local bm = { api = 1, version = 3, rows = {}, order = {}, down = {} }
+	bm.register_binding = function (id, label, slot, opts) bm.rows[id] = { label = label, category = opts and opts.category } bm.order[#bm.order + 1] = id return true end
+	bm.is_down = function (id) return bm.down[id] == true end
+	rawset(_G, "ModBindingsMenu", bm); run(3)
+	check(#bm.order == 3 and bm.rows["vibeslacker.sapp.open_passive"].label == "Open Passive Grid" and bm.rows["vibeslacker.sapp.open_rating"].label == "Open Rating Grid"
+		and bm.rows["vibeslacker.sapp.hard_set"].label == "Hard Set Armor", "three rows registered on the page")
+	check(bm.rows["vibeslacker.sapp.open_rating"].category == (public and "Simple Armor Passive Picker" or "Passive Picker"), "under the mod's own category")
+	check(log_text():find("bindings: \"Open Rating Grid\" is on the game's bindings page", 1, true), "the log says where to find them")
+	local function bpress(id) bm.down[id] = true; run(2); bm.down[id] = false; run(2) end
+	-- an empty row changes nothing: the settings-file buttons still work
+	ptap(R3); check(passive_open(), "before any row is used, R3 still opens the passive grid"); ptap(R3)
+	bpress("vibeslacker.sapp.open_rating")
+	check(rating_open() and not passive_open(), "a press of the rating row opens the rating grid")
+	check(log_text():find("bindings: \"Open Rating Grid\" was used; only it counts from now on", 1, true), "and the log says it now replaces the settings-file button")
+	bpress("vibeslacker.sapp.open_rating")
+	check(not rating_open(), "the row closes it again")
+	ptap(L3); ptap(L3)
+	check(not rating_open() and not passive_open(), "L3 from the settings file is ignored once the row is used")
+	ptap(R3); check(passive_open(), "the passive grid's R3 is untouched until its own row is used"); ptap(R3)
+	bpress("vibeslacker.sapp.open_passive")
+	check(passive_open() and not rating_open(), "the passive row opens the passive grid")
+	bpress("vibeslacker.sapp.open_rating")
+	check(rating_open() and not passive_open(), "the rating row switches to the rating grid")
+	bpress("vibeslacker.sapp.open_rating")
+	ptap(R3)
+	check(not passive_open(), "after the passive row is used, R3 is ignored")
+	n = count_of("nothing to save")
+	bpress("vibeslacker.sapp.hard_set")
+	check(count_of("nothing to save") == n + 1, "the hard set row hard sets the worn armor, as F6 does")
+	-- a page that refuses, and one that is not there
+	rawset(_G, "ModBindingsMenu", nil); run(3)
+	pad.slot = nil; run(3)
+	check(not log_text():find("stopped", 1, true), "no error from any of it")
 	print("a controller that fails")
 	local real = xinput.XInputGetState
 	xinput.XInputGetState = function () error("driver fell over") end
@@ -1012,6 +1076,34 @@ else
 	check(is_open(), "the mouse still opens the grid")
 	click_at(1500, 200); point_at(1500, 200); run(3)
 	check(not log_text():find("stopped", 1, true), "nothing else stopped")
+end
+if mode ~= "nofont" then
+		-- last in this part: a run of extra frames earlier shifts the timing the armor-change checks above lean on
+		print("description after a half second rest")
+		local function rest(sec) picker.test.ui.tip_at = picker.test.ui.tip_at - sec end   -- as if the cursor had rested that long
+		local function described(g) for _, t in ipairs(g and g.texts or {}) do if t.text:sub(1, 2) == "- " then return true end end return false end
+		point_at(1500, 200); run(3)
+		point_at(55 + BX + 80, 366 + BY + 14); run(3)
+		check(not described(surface()), "no description the moment the cursor lands on the box")
+		rest(0.3); run(3)
+		check(not described(surface()), "none after 0.3 seconds")
+		rest(0.3); run(3)
+		check(described(surface()), "description shows after half a second on the box")
+		point_at(1500, 200); run(3)
+		check(not described(surface()), "gone when the cursor leaves")
+		click_at(55 + BX + 80, 366 + BY + 14)
+		local row = find_text(surface(), "FORTIFIED") or find_text(surface(), "ENGINEERING KIT")
+		point_at(row.x + 20, row.y + 2); run(3)
+		check(not described(surface()), "no description on a grid row at first")
+		rest(0.6); run(3)
+		check(described(surface()), "description of the row under the cursor after half a second")
+		do
+			local head
+			for _, t in ipairs(surface().texts) do if t.text:sub(1, 2) == "- " then head = t end end
+			check(head and head.x > row.x + 100, "the description sits to the right of the highlighted row")
+			check(head and head.y <= row.y + 30 and head.y > row.y - 200, "and level with it, not far above or below")
+		end
+		click_at(1500, 200)
 end
 
 if mode == nil or mode == "" then   -- leave armor 3 heavy, for shutdown to put back

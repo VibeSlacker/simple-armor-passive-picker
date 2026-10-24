@@ -54,6 +54,7 @@ def main():
         sys.exit("usage: build.py [public]")
     load = lambda name: json.load(open(os.path.join(HERE, "data", name), encoding="utf-8"))
     sigs, armors, passives = load("sigs.json"), load("armors.json"), load("passives.json")
+    descs = load("passive_desc.json")
     if public:
         sigs = [s for s in sigs if not s.get("personal")]
     sig_lua = "{\n" + "".join(
@@ -65,6 +66,8 @@ def main():
         for s in sigs) + "}"
     pas_lua = "{\n" + "".join("\t[%d] = %s,\n" % (int(k), lua_str(v))
                               for k, v in sorted(passives.items(), key=lambda kv: int(kv[0]))) + "}"
+    desc_lua = "{\n" + "".join("\t[%d] = { %s },\n" % (int(k), ", ".join(lua_str(x) for x in v))
+                               for k, v in sorted(descs.items(), key=lambda kv: int(kv[0]))) + "}"
     arm_lua = "{\n" + "".join("\t[%d] = { n = %s, p = %d },\n" % (int(k), lua_str(v["n"]), v["p"])
                               for k, v in sorted(armors.items(), key=lambda kv: int(kv[0]))) + "}"
     with open(os.path.join(HERE, "src", "passive_picker.lua"), encoding="utf-8") as fh:
@@ -91,7 +94,7 @@ def main():
         for word in ("redraw", "card_refresh", "PERSONAL"):
             if word in src:
                 sys.exit("public build still mentions %s" % word)
-    for mark, text in (("--@SIGS@", sig_lua), ("--@PASSIVES@", pas_lua), ("--@ARMORS@", arm_lua)):
+    for mark, text in (("--@SIGS@", sig_lua), ("--@PASSIVES@", pas_lua), ("--@ARMORS@", arm_lua), ("--@DESCS@", desc_lua)):
         if src.count(mark) != 1:
             sys.exit("placeholder %s must appear exactly once" % mark)
         src = src.replace(mark, text)
