@@ -29,3 +29,7 @@ python3 tools/make_release.py build-public release Simple-Armor-Passive-Picker-<
 ## Thanks
 
 CowboyBingus for Bingus Shared Loader. RatInPlat (HD2 Transmog Foundation) and tanau4 (DiverKit), whose mods showed where the game keeps things. This mod contains none of their code and needs neither installed.
+
+## Support
+
+If you like my mods, you can support me at https://ko-fi.com/vibeslacker
