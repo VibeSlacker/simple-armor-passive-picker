@@ -209,6 +209,39 @@ end
 local function put32(a, v) return put(a, v, 4) end
 local function put64(a, v) return put(a, v, 8) end
 
+-- Last resort for a record whose pointer crosses a cache line when no copy could
+-- be placed next to the game's lists (the window was full): the pointer goes in
+-- as two back-to-back 4-byte stores with the page opened once, read back, and
+-- the old pointer put back if it did not take. Not atomic; a game thread reading
+-- in those few nanoseconds could see half of it. Used only where the safe
+-- 4-byte write is not possible (Wilson chose this 2026-11-01, HellForge 0.3.0).
+local function put_split(a, v)
+	local _, _, ok, prot = query(a)
+	if not ok or not readable(a, 8) then return false, "unreadable" end
+	if a % 4 ~= 0 then return false, "not aligned" end
+	local old = ptr(a)
+	if not old then return false, "unreadable" end
+	local unlocked = false
+	if prot ~= 0x04 then
+		if kernel.VirtualProtect(ffi.cast("void *", a), 8, 0x04, oldprot) == 0 then
+			return false, "page protection " .. tostring(prot) .. " could not be opened"
+		end
+		unlocked = true
+	end
+	local w = ffi.cast("uint32_t *", a)
+	local lo, hi = v % 4294967296, math.floor(v / 4294967296)
+	w[0] = lo
+	w[1] = hi
+	local took = ptr(a) == v
+	if not took then
+		w[0] = old % 4294967296
+		w[1] = math.floor(old / 4294967296)
+	end
+	if unlocked then kernel.VirtualProtect(ffi.cast("void *", a), 8, oldprot[0], tmpprot) end
+	if not took then return false, "read-back differs, old pointer put back" end
+	return true, (unlocked and ("page protection was " .. tostring(prot)) or "plain writable page") .. ", split write (no copy room)"
+end
+
 -- A body list pointer is changed by writing only its low 4 bytes when the old
 -- and new pointers share the top 4: one aligned 4-byte write, whole wherever
 -- the record sits (about a third of the game's records have +48 across a
@@ -221,7 +254,9 @@ local function put_list(a, list)
 		if ptr(a) ~= list then return false, "read-back differs" end
 		return true, how .. ", low 4 bytes"
 	end
-	return put64(a, list)
+	local ok, how = put64(a, list)
+	if ok or how ~= "crosses a cache line" then return ok, how end
+	return put_split(a, list)
 end
 
 -- The copied pieces live in blocks placed in the same 4 GB window as the

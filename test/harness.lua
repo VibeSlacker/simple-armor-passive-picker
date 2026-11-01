@@ -424,8 +424,8 @@ elseif mode == "noarena" then
 	end
 	pick(ARMOR[1].id, "150")
 	check(log_text():find("copy memory: no free room left in window 0x7000; further copies in Lua memory", 1, true), "log says the copies go in Lua memory")
-	check(r64(ARMOR[1].at + 48) == ARMOR[1].list and log_text():find("CLASS WRITE FAILED on FS-37 Ravager: crosses a cache line", 1, true),
-		"a record across a cache line, with its copy outside its list's window, is refused as before and never half written")
+	check(r64(ARMOR[1].at + 48) ~= ARMOR[1].list and log_text():find("CLASS FS-37 Ravager: ARMOR RATING 50 -> ARMOR RATING 150", 1, true) and log_text():find("split write (no copy room)", 1, true),
+		"a record across a cache line, with its copy outside its list's window, takes the pick by the split write and reads back whole")
 	pick(ARMOR[2].id, "150")
 	check(r64(ARMOR[2].at + 48) ~= ARMOR[2].list and log_text():find("CLASS FS-55 Devastator: ARMOR RATING 75 -> ARMOR RATING 150", 1, true), "a record inside one cache line still takes its pick")
 else

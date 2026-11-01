@@ -1,4 +1,4 @@
-Simple Armor Passive Picker 1.4.1
+Simple Armor Passive Picker 1.4.2
 by vibeslacker
 Made with AI.
 
@@ -104,6 +104,13 @@ DiverKit, whose mods showed me where the game keeps things. This mod
 contains none of their code and needs neither installed.
 
 CHANGES
+1.4.2  Fixed: the rating box did nothing on some armors (UF-50 Bloodhound
+       and others) on HellForge 0.3.0. 1.3.0 fixed this with a copy placed
+       next to the game's own lists, but on 0.3.0 that part of memory has no
+       room left. When no room can be found, the mod now writes the armor's
+       pointer in two quick steps, reads it back, and puts the old one back
+       if it did not take. It only does this for the armors that could not
+       change before; every other armor is written as in 1.4.1.
 1.4.1  New: rest the mouse (or the W/S or pad highlight) on a passive in the
        grid, or on the passive box, for half a second and a box beside it
        tells what that passive does. Left stick click opens the rating grid.
