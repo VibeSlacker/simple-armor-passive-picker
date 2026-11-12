@@ -1,4 +1,4 @@
-Simple Armor Passive Picker 1.4.2
+Simple Armor Passive Picker 1.4.3
 by vibeslacker
 Made with AI.
 
@@ -97,6 +97,10 @@ UNINSTALL
 Close the game, disable or remove the mod, deploy. Delete the three
 SimpleArmorPassivePicker files if you want no trace.
 
+LICENSE
+MIT License, copyright (c) 2026 vibeslacker. The full text is in LICENSE.txt.
+If you use this mod or its idea in your own work, please credit vibeslacker for the idea.
+
 THANKS
 CowboyBingus for Bingus Shared Loader.
 RatInPlat, author of HD2 Transmog Foundation, and tanau4, author of
@@ -104,6 +108,13 @@ DiverKit, whose mods showed me where the game keeps things. This mod
 contains none of their code and needs neither installed.
 
 CHANGES
+1.4.3
+  NEW
+  - Stationary Shroud, the passive added by the Scope of Authority mod, now
+    shows in the passive grid (with its hover description) when that mod is
+    installed and has registered it. Without it nothing changes.
+  CHANGED
+  - Added the MIT license (LICENSE.txt in the zip).
 1.4.2  Fixed: the rating box did nothing on some armors (UF-50 Bloodhound
        and others) on HellForge 0.3.0. 1.3.0 fixed this with a copy placed
        next to the game's own lists, but on 0.3.0 that part of memory has no

@@ -1476,19 +1476,30 @@ local function ui_clear()
 end
 
 -- The owned passives plus the armor's own, by name.
+-- Scope of Authority adds the Stationary Shroud as passive 22 (a slot in the
+-- customization manager's passive index, -1 until a mod registers it). No such
+-- mod, no change to the list. (Inline, no new top-level locals: the file is at
+-- Lua's 200-local limit.)
 local function grid_list(rec)
-	if ui.list and ui.list_item == rec.item and ui.list_count == #owned_passives then return ui.list end
+	local shroud = false
+	pcall(function ()
+		local manager = ptr(need(globals.armor_catalog, 8, "armor catalog slot"))
+		local at = manager and (manager + 0x30 + 4 * 22)
+		shroud = (at and readable(at, 4) and u32(at) ~= 0xffffffff) and true or false
+	end)
+	if ui.list and ui.list_item == rec.item and ui.list_count == #owned_passives and ui.list_shroud == shroud then return ui.list end
 	local seen, list = {}, {}
 	for _, enum in ipairs(owned_passives) do
 		if not seen[enum] then seen[enum] = true; list[#list + 1] = enum end
 	end
+	if shroud and not seen[22] then seen[22] = true; list[#list + 1] = 22 end
 	if not seen[rec.default] then list[#list + 1] = rec.default end
 	table.sort(list, function (a, b)
 		local x, y = passive_name(a), passive_name(b)
 		if x == y then return a < b end
 		return x < y
 	end)
-	ui.list, ui.list_item, ui.list_count = list, rec.item, #owned_passives
+	ui.list, ui.list_item, ui.list_count, ui.list_shroud = list, rec.item, #owned_passives, shroud
 	return list
 end
 
@@ -1620,7 +1631,7 @@ local function draw(card, lay, handles, hover, gw, gh, tip)
 		gw, gh, handles.key, rec.item, current, rec.default, tostring(lay.grid ~= nil), tostring(hover), cfg_rev)
 		.. "|" .. tostring(class) .. "|" .. (kept and (tostring(kept.p) .. "," .. tostring(kept.c)) or "-")
 		.. string.format("|%.1f,%.1f|%.1f,%.1f|%s", lay.box.x, lay.box.y, lay.grid and lay.grid.x or 0, lay.grid and lay.grid.y or 0, tostring(lay.open))
-		.. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "") .. (ui.pad_mode and "|pad" or "") .. "|tip=" .. tostring(tip)
+		.. "|n=" .. #(ui.list or {}) .. (lay.cbox and string.format("|%.1f,%.1f", lay.cbox.x, lay.cbox.y) or "") .. (ui.pad_mode and "|pad" or "") .. "|tip=" .. tostring(tip)
 	if ui.world == target and ui.sig == sig then return end
 	ui_clear()
 	local gui = World.create_screen_gui(target, "scale", 1, 1)

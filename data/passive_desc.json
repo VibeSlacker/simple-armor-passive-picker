@@ -20,6 +20,7 @@
 "19": ["One-time, short-lived resuscitation upon death, if the body is still intact.", "Increases stim effect duration by 2.0s.", "Provides 50% resistance to arc damage."],
 "20": ["Provides 25% resistance to chest damage.", "Provides 25% resistance to explosive damage.", "Prevents all damage from bleeding if the chest hemorrhages."],
 "21": ["Provides 40% resistance to fire, gas, acid and electrical damage.", "Increases throwing range by 20%."],
+"22": ["Reduces enemy detection range while stationary and crouched or prone."],
 "31": ["Wearer makes 50% less noise when moving.", "Increases point-of-interest identification range by 30%.", "Provides immunity to leg injuries."],
 "32": ["Wearer makes 50% less noise when moving.", "Reduces the range at which enemies detect you by 40%."],
 "33": ["Increases melee damage by 40%.", "More resistant to being knocked prone."],

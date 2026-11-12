@@ -26,6 +26,10 @@ python3 tools/make_release.py build-public release Simple-Armor-Passive-Picker-<
 - `data/` holds facts about game build 25480438: code signatures, armor ids with their default passive, passive names. `tools/make_sigs.py` remakes the signatures from a dump of the game's code after an update.
 - `test/harness.lua` runs the built mod against a fake game, frame by frame. It proves the mod's own logic, not the game's layout.
 
+## License
+
+MIT License, copyright (c) 2026 vibeslacker; the full text is in [`LICENSE`](LICENSE). If you use this mod or its idea in your own work, please credit vibeslacker for the idea.
+
 ## Thanks
 
 CowboyBingus for Bingus Shared Loader. RatInPlat (HD2 Transmog Foundation) and tanau4 (DiverKit), whose mods showed where the game keeps things. This mod contains none of their code and needs neither installed.

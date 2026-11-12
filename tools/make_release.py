@@ -3,8 +3,8 @@
 
   make_release.py <build-public dir> <release dir> <zip name>
 
-Layout (the one other Bingus Shared Loader mods use): manifest.json, README.txt
-and Addon/ with the patch file and its two empty side files.
+Layout (the one other Bingus Shared Loader mods use): manifest.json, README.txt,
+LICENSE.txt and Addon/ with the patch file and its two empty side files.
 """
 import os
 import sys
@@ -19,6 +19,7 @@ def main():
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for extra in ("manifest.json", "README.txt"):
             z.write(os.path.join(release, extra), extra)
+        z.write(os.path.join(release, "..", "LICENSE"), "LICENSE.txt")
         for suffix in ("", ".gpu_resources", ".stream"):
             f = ARCHIVE + ".patch_0" + suffix
             z.write(os.path.join(build, f), "Addon/" + f)

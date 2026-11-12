@@ -167,6 +167,7 @@ local function weights(a)
 end
 wptr(catalog, kits); w32(catalog + 8, #ARMOR)
 wptr(slot_of.armor_catalog, catalog)
+w32(catalog + 0x30 + 4 * 22, 0xffffffff)   -- passive id 22's index slot: -1 until a mod (Scope of Authority) registers it
 local rows = alloc(4 * 8)
 for i = 0, 3 do w32(rows + i * 8, 0xffffffff) end
 w32(rows + 3 * 8, 7); w32(rows + 3 * 8 + 4, 0)        -- player id 7 -> customization slot 0
@@ -449,6 +450,7 @@ else
 	check(find_text(g, "ARMOR PASSIVE   (* = this armor's own)   W A S D + SPACE") ~= nil, "grid opens on a click")
 	check(find_text(g, "SERVO-ASSISTED *") ~= nil, "the unowned armor's own passive is offered and marked")
 	check(find_text(g, "ENGINEERING KIT") ~= nil and find_text(g, "FORTIFIED") ~= nil, "owned passives listed")
+	g = surface()
 	local cell = find_text(g, "ENGINEERING KIT")
 	click_at(cell.x + 20, cell.y + 2)
 	check(r32(ARMOR[3].at + 28) == 6, "pick written to the armor record")
@@ -1182,6 +1184,19 @@ elseif mode == nil or mode == "" then
 	w32(payload + 0x60, 4249); run(80)
 	check(#refreshed == n + 1, "no further calls this session")
 	w32(payload + 0x60, 0); w32(payload + 0, 0)
+end
+if mode == nil or mode == "" then   -- Stationary Shroud (passive 22): offered only once a mod such as Scope of Authority has registered it
+	print("Stationary Shroud")
+	w32(owner + 8, 1); w32(manager + 0x62a0, 1); run(40)
+	click_at(55 + BX + 80, 366 + BY + 14)
+	local g = surface()
+	check(find_text(g, "ENGINEERING KIT") ~= nil, "grid open for the Shroud check")
+	check(find_text(g, "STATIONARY SHROUD") == nil, "no Stationary Shroud while no mod has registered passive 22")
+	local nudge = find_text(g, "ENGINEERING KIT")
+	w32(catalog + 0x30 + 4 * 22, 32); point_at(nudge.x + 20, nudge.y + 2); run(10)
+	check(find_text(surface(), "STATIONARY SHROUD") ~= nil, "Stationary Shroud is offered once passive 22 is registered")
+	w32(catalog + 0x30 + 4 * 22, 0xffffffff); point_at(nudge.x + 20, nudge.y - 200); run(3); point_at(nudge.x + 20, nudge.y + 2); run(10)
+	check(find_text(surface(), "STATIONARY SHROUD") == nil, "and goes again when it is not")
 end
 do
 	local f = io.open(LOGDIR .. NAME .. ".previous.log"); local t = f and f:read("*a") or ""; if f then f:close() end
