@@ -3,8 +3,8 @@
 --
 -- Picks the armor rating (50 light to 150 heavy) and the passive of the armor
 -- worn on the pre-mission loadout screen, from two clickable boxes of the same
--- width that split your player card evenly (equal gaps at both edges and
--- between them): the class box on the left, the passive box on the right, on
+-- width that split your player card evenly (equal margins at both edges, the
+-- two boxes touching in the middle): the class box on the left, the passive box on the right, on
 -- the MISSION STRATAGEMS line (on the Equipment page, where that line gives way
 -- to the gear tiles, above the STRATAGEMS button). Each box opens its own grid:
 -- the ratings (50, 64, 70, 79, 100, 129, 150, as near as the armor's pieces
@@ -1277,16 +1277,16 @@ end
 -- lower-left corner of the EQUIPMENT button; x goes right, y goes up.
 local CFG = DIR .. "PassivePicker.cfg"
 local SETTINGS = {
-	{ "box_x", 213, "passive box: left edge (213 = right half of the card)" },
+	{ "box_x", 210, "passive box: left edge (210 = the card centre, touching the class box)" },
 	{ "box_y", -44, "passive box: bottom edge (negative = below the EQUIPMENT button)" },
-	{ "box_w", 201, "passive box: width" },
-	{ "class_w", 201, "class box: width" },
-	{ "class_dx", -207, "class box: left edge, from the passive box's left edge (-207 = the left half of the card, the same gap as at the edges)" },
+	{ "box_w", 204, "passive box: width" },
+	{ "class_w", 204, "class box: width" },
+	{ "class_dx", -204, "class box: left edge, from the passive box's left edge (-204 = touching the passive box at the card centre; 6 to 210)" },
 	{ "class_dy", 0, "class box: bottom edge, from the passive box's bottom edge" },
 	{ "box_h", 26, "both boxes: height" },
 	{ "box_text", 13, "both boxes: text size" },
 	{ "equip_y", 370, "the Equipment page is showing when the button sits at or above this screen height (366 on the loadout page, 373 on the Equipment page)" },
-	{ "eq_box_x", 213, "passive box on the Equipment page: left edge (213 = right half of the card)" },
+	{ "eq_box_x", 210, "passive box on the Equipment page: left edge (210 = the card centre)" },
 	{ "eq_box_y", 46, "passive box on the Equipment page: bottom edge (46 = just above the STRATAGEMS button)" },
 	{ "grid_x", 0, "grid: left edge" },
 	{ "grid_y", 274, "grid: bottom edge (274 = just above DiverKit's 15-slot panel)" },

@@ -1,12 +1,12 @@
-Simple Armor Passive Picker 1.4.3
+Simple Armor Passive Picker 1.4.4
 by vibeslacker
 Made with AI.
 
 Pick the armor passive and the armor rating you want on the armor you like.
 
 WHAT IT DOES
-Two boxes of the same width sit side by side on your player card on the
-pre-mission loadout screen.
+Two boxes of the same width sit side by side, touching in the middle, on your
+player card on the pre-mission loadout screen.
 - The rating box (left) shows the armor's rating, e.g. ARMOR RATING 79.
   Click it to pick 50, 64, 70, 79, 100, 129, 150 or ORIGINAL: every rating
   the game's own armors have, odd ones included. The rating sets speed and
@@ -108,6 +108,13 @@ DiverKit, whose mods showed me where the game keeps things. This mod
 contains none of their code and needs neither installed.
 
 CHANGES
+1.4.4
+  CHANGED
+  - The two boxes now touch in the middle of the card and are centered on it
+    (equal margin at both edges), instead of having a small gap between them.
+    This is the new default. If you already have a settings file, your boxes
+    stay where they were; delete the box_x, box_w, class_w, class_dx and
+    eq_box_x lines (or the whole file) to get the new spot.
 1.4.3
   NEW
   - Stationary Shroud, the passive added by the Scope of Authority mod, now
