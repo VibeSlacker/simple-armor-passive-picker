@@ -54,11 +54,11 @@ end
 -- the public build is published under another name, so its files and its global carry that name
 local NAME = #sigs == 8 and "SimpleArmorPassivePicker" or "PassivePicker"
 -- default spot of the box on the loadout page (the public build starts above the EQUIPMENT button)
-local BX, BY = 213, #sigs == 8 and 54 or -44
--- the box label is centered: where a label starts inside the 201-wide box at the default text size
-local function TX(value) return (201 - #value * (#sigs == 8 and 15 or 13) * 0.55) / 2 end
--- the class box: as wide as the passive box, on the left half of the card (6 from each edge, 6 between)
-local CBX = BX - 207
+local BX, BY = 210, #sigs == 8 and 54 or -44
+-- the box label is centered: where a label starts inside the 204-wide box at the default text size
+local function TX(value) return (204 - #value * (#sigs == 8 and 15 or 13) * 0.55) / 2 end
+-- the class box: as wide as the passive box, on the left half of the card (6 from each edge, the two touching at the centre)
+local CBX = BX - 204
 
 local IMAGE = 0x200000
 local image = alloc(IMAGE)
@@ -180,13 +180,16 @@ local players, player = alloc(0x200), alloc(0x40)
 w32(players + 0x84, 1); w32(players + 0x88, 1); wptr(players + 0xe8, player); w32(player + 8, 7)
 wptr(slot_of.players, players)
 
--- progression: armors 1 and 2 owned, armor 3 not
-local progression = alloc(0xC0000)
-w32(progression + 0x1ce0, #ARMOR)
+-- progression: armors 1 and 2 owned, armor 3 not. Mode "moved" lays it out as HellForge 0.5 does
+-- (state_moves.c: the block at P+0x4da2df0, room for 40,960 items) and leaves the game's own place empty.
+local at = mode == "moved" and { count = 0x4da2df0, states = 0x4da2df4, entries = 0x54d2df4, size = 0x54d3000 }
+	or { count = 0x1ce0, states = 0x1ce4, entries = 0xb9ce4, size = 0xC0000 }
+local progression = alloc(at.size)
+w32(progression + at.count, #ARMOR)
 for i, a in ipairs(ARMOR) do
-	local e = progression + 0xb9ce4 + (i - 1) * 24
+	local e = progression + at.entries + (i - 1) * 24
 	w32(e, i - 1); w32(e + 8, a.id)
-	w32(progression + 0x1ce4 + (i - 1) * 184 + 0x14, i < 3 and 2 or 0)
+	w32(progression + at.states + (i - 1) * 184 + 0x14, i < 3 and 2 or 0)
 end
 wptr(slot_of.progression, progression)
 
@@ -367,6 +370,8 @@ local text = log_text()
 check(text:find("DISCOVERY OK", 1, true), "discovery finished")
 check(text:find("2 body armors owned", 1, true), "two of three armors owned")
 check(not text:find("stopped", 1, true), "nothing stopped")
+check(text:find(mode == "moved" and "progression layout: moved (HellForge 0.5), 3 entries" or "progression layout: game (HellForge 0.4), 3 entries", 1, true),
+	"ownership read from the " .. (mode == "moved" and "moved (0.5)" or "game's own (0.4)") .. " layout")
 
 if mode == "badinput" then
 	print("consume function body differs")
@@ -490,7 +495,7 @@ else
 		f:write("# Passive Picker: where the box and the grid sit on the player card.\r\nbox_x = 133\r\nbox_y = " .. BY .. "\r\nbox_w = 166\r\neq_box_x = 134\r\ngrid_alpha = 99\r\n"); f:close()
 		point_at(1500, 200); run(130)
 		local h = assert(io.open(LOGDIR .. NAME .. ".cfg")); local t = h:read("*a"); h:close()
-		check(t:find("box_x = 213\r\n", 1, true) and t:find("box_w = 201\r\n", 1, true) and t:find("eq_box_x = 213\r\n", 1, true) and t:find("class_w = 201\r\n", 1, true),
+		check(t:find("box_x = 210\r\n", 1, true) and t:find("box_w = 204\r\n", 1, true) and t:find("eq_box_x = 210\r\n", 1, true) and t:find("class_w = 204\r\n", 1, true),
 			"box spots reset once and the file rewritten with the class box")
 		check(t:find("grid_alpha = 99\r\n", 1, true) and log_text():find("settings: file from before the class box", 1, true), "other settings kept, and the log says so")
 		local label = find_text(surface(), "ARMOR RATING 100")
@@ -576,12 +581,12 @@ else
 	local cbox = find_text(surface(), "ARMOR RATING 100")
 	check(cbox and math.abs(cbox.x - (55 + 6 + TX("ARMOR RATING 100"))) < 1.5 and cbox.y > 366 + BY and cbox.y < 366 + BY + 26, "class box on the left half of the card, showing the armor's rating")
 	local pbox = find_text(surface(), "FORTIFIED")
-	check(pbox and math.abs(pbox.x - (55 + 213 + TX("FORTIFIED"))) < 1.5 and math.abs(pbox.y - cbox.y) < 0.5, "passive box on the right half, on the same line")
+	check(pbox and math.abs(pbox.x - (55 + BX + TX("FORTIFIED"))) < 1.5 and math.abs(pbox.y - cbox.y) < 0.5, "passive box on the right half, on the same line")
 	do
 		local lay = picker.test.layout({ x = 55, y = 366, w = 420, h = 42 }, {}, 1920, 1080, nil, nil, { 0, 1, 2, "own" })
 		local c, b = lay.cbox, lay.box
-		check(c.w == b.w and math.abs((c.x - 55) - 6) < 0.01 and math.abs(b.x - (c.x + c.w) - 6) < 0.01 and math.abs((55 + 420) - (b.x + b.w) - 6) < 0.01,
-			"the two boxes are the same width with equal gaps at both edges and between them")
+		check(c.w == b.w and math.abs((c.x - 55) - 6) < 0.01 and math.abs(b.x - (c.x + c.w)) < 0.01 and math.abs((55 + 420) - (b.x + b.w) - 6) < 0.01,
+			"the two boxes are the same width with equal margins at both edges, touching in the middle")
 	end
 	check(find_text(surface(), "FORTIFIED") ~= nil, "the passive box shows the passive alone")
 	open_class()
@@ -661,7 +666,7 @@ else
 	cbox = find_text(surface(), "ARMOR RATING 100")
 	check(not class_open() and cbox and cbox.y > 366 + BY + 40, "a drag moves the class box and does not open its grid")
 	local h = assert(io.open(LOGDIR .. NAME .. ".cfg")); local ct = h:read("*a"); h:close()
-	check(ct:find("class_dx = -207\r\n", 1, true) and ct:find("class_dy = 40\r\n", 1, true) and ct:find("box_x = " .. BX .. "\r\n", 1, true), "its spot from the passive box is saved, the passive box stays")
+	check(ct:find("class_dx = -204\r\n", 1, true) and ct:find("class_dy = 40\r\n", 1, true) and ct:find("box_x = " .. BX .. "\r\n", 1, true), "its spot from the passive box is saved, the passive box stays")
 	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("# defaults\r\n"); f:close(); run(130)
 	click_at(55 + BX + 80, 366 + BY + 14)
 	cell = find_text(surface(), "FORTIFIED")
@@ -712,11 +717,11 @@ else
 	print("Equipment page")
 	wf(widget + 156, 373); run(12)
 	label = find_text(surface(), "ENGINEERING KIT")
-	check(label and label.x > 55 + 213 and label.x < 55 + 213 + 201, "passive box on the right half of the card")
+	check(label and label.x > 55 + 210 and label.x < 55 + 210 + 204, "passive box on the right half of the card")
 	check(label and label.y > 373 + 46 and label.y < 373 + 46 + 26, "box sits above the STRATAGEMS button")
 	click_at(55 + 328, 373 - 30)
 	check(find_text(surface(), "FORTIFIED") == nil, "a click where the box used to sit does nothing")
-	click_at(55 + 213 + 100, 373 + 46 + 13)
+	click_at(55 + 210 + 100, 373 + 46 + 13)
 	check(find_text(surface(), "FORTIFIED") ~= nil, "click on the moved box opens the grid")
 	click_at(1500, 200)
 	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("eq_box_x = 10\r\neq_box_y = 100\r\n"); f:close()
@@ -752,7 +757,7 @@ else
 	check(find_text(surface(), "FORTIFIED") == nil, "a drag on the box does not open the grid")
 	check(label and math.abs(label.x - (55 + BX + TX("ENGINEERING KIT") + 120)) < 1.5 and label.y > 366 + BY + 80, "the box is dropped where the mouse let go")
 	check(cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true) and cfg_file():find("box_y = " .. (BY + 80) .. "\r\n", 1, true), "its new spot is saved in the settings file")
-	check(cfg_file():find("eq_box_x = 213\r\n", 1, true), "the Equipment-page spot is not touched")
+	check(cfg_file():find("eq_box_x = 210\r\n", 1, true), "the Equipment-page spot is not touched")
 	run(130)
 	label = find_text(surface(), "ENGINEERING KIT")
 	check(label and math.abs(label.x - (55 + BX + TX("ENGINEERING KIT") + 120)) < 1.5, "it stays there after the settings are read again")
@@ -767,8 +772,8 @@ else
 	click_at(cell.x + 20, cell.y + 2)
 	check(r32(ARMOR[1].at + 28) == 3, "a pick still works in the moved grid")
 	wf(widget + 156, 373); run(12)
-	drag(55 + 213 + 100, 373 + 46 + 13, -40, 30)
-	check(cfg_file():find("eq_box_x = 173\r\n", 1, true) and cfg_file():find("eq_box_y = 76\r\n", 1, true) and cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true),
+	drag(55 + 210 + 100, 373 + 46 + 13, -40, 30)
+	check(cfg_file():find("eq_box_x = 170\r\n", 1, true) and cfg_file():find("eq_box_y = 76\r\n", 1, true) and cfg_file():find("box_x = " .. (BX + 120) .. "\r\n", 1, true),
 		"on the Equipment page the drag moves that page's spot only")
 	wf(widget + 156, 366); run(12)
 	f = assert(io.open(LOGDIR .. NAME .. ".cfg", "w")); f:write("drag = 0\r\n"); f:close(); point_at(1500, 200); run(130)
@@ -1094,7 +1099,12 @@ if mode ~= "nofont" then
 		point_at(1500, 200); run(3)
 		check(not described(surface()), "gone when the cursor leaves")
 		click_at(55 + BX + 80, 366 + BY + 14)
-		local row = find_text(surface(), "FORTIFIED") or find_text(surface(), "ENGINEERING KIT")
+		-- a grid row, above the box line: the box's own label can carry the same passive name (noarena mode wears FORTIFIED)
+		local row
+		for _, t in ipairs(surface().texts) do
+			if (t.text == "FORTIFIED" or t.text == "ENGINEERING KIT") and (t.z or 0) < 972 and t.y > 366 + BY + 26 then row = t break end
+		end
+		check(row ~= nil, "the passive grid is open with a row to rest on")
 		point_at(row.x + 20, row.y + 2); run(3)
 		check(not described(surface()), "no description on a grid row at first")
 		rest(0.6); run(3)

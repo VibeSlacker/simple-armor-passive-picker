@@ -1,5 +1,5 @@
 -- HD2-Addon: mods/jarvis/passive_picker
--- Passive Picker, test build 0.33, for Bingus Shared Loader v15+.
+-- Passive Picker, test build 0.34, for Bingus Shared Loader v15+.
 --
 -- Picks the armor rating (50 light to 150 heavy) and the passive of the armor
 -- worn on the pre-mission loadout screen, from two clickable boxes of the same
@@ -85,7 +85,7 @@
 --                    card+0x1b820 (used as the anchor for the box)
 
 if rawget(_G, "JarvisPassivePicker") then return true end
-local REVISION = "Passive Picker test 0.33"
+local REVISION = "Passive Picker test 0.34"
 local state = { revision = REVISION, frames = 0, status = "starting" }
 rawset(_G, "JarvisPassivePicker", state)
 
@@ -888,30 +888,52 @@ local function read_catalog()
 end
 
 -- ------------------------------------------------------------------ ownership
-local function read_owned()
-	local progression = ptr(need(globals.progression, 8, "progression slot"))
-	if not progression then return nil, "progression not created yet" end
-	need(progression + 0x1ce0, 4, "progression count")
-	local count = u32(progression + 0x1ce0)
-	if count < 1 or count > 4096 then return nil, "progression empty or out of bounds" end
-	local owned, total = {}, 0
-	for i = 0, count - 1 do
-		local entry = progression + 0xb9ce4 + i * 24
-		need(entry, 12, "progression entry")
-		local index, item = u32(entry), u32(entry + 8)
-		if index >= count then error("progression index rejected", 0) end
-		local rec = records[item]
-		if rec then
-			local st = progression + 0x1ce4 + index * 184
-			need(st, 184, "progression state")
-			local status = u32(st + 0x14)
-			if (status == 2 or status == 4) and u8(st + 0xb4) == 0 and not owned[item] then
-				owned[item] = true
-				total = total + 1
+-- Where the item list sits, from the progression pointer. HellForge 0.5 moves
+-- the whole block out of the game state and makes room for 40,960 items
+-- (HellForge native/mod-loader/state_moves.c: catalogue at P+0x4da2df0, its
+-- hierarchy after 40,960 184-byte states); 0.4, or a 0.5 whose move refused,
+-- keeps the game's own place for 4,096 items.
+local read_owned
+do
+	local LAYOUTS = {
+		{ name = "game (HellForge 0.4)", count = 0x1ce0, states = 0x1ce4, entries = 0xb9ce4, max = 4096 },
+		{ name = "moved (HellForge 0.5)", count = 0x4da2df0, states = 0x4da2df4, entries = 0x54d2df4, max = 40960 },
+	}
+	local logged
+	read_owned = function ()
+		local progression = ptr(need(globals.progression, 8, "progression slot"))
+		if not progression then return nil, "progression not created yet" end
+		local L, count
+		for _, try in ipairs(LAYOUTS) do
+			if readable(progression + try.count, 4) then
+				local n = u32(progression + try.count)
+				if n >= 1 and n <= try.max then L, count = try, n break end
 			end
 		end
+		if not L then return nil, "progression empty or out of bounds" end
+		if logged ~= L then
+			logged = L
+			log(string.format("progression layout: %s, %d entries", L.name, count))
+		end
+		local owned, total = {}, 0
+		for i = 0, count - 1 do
+			local entry = progression + L.entries + i * 24
+			need(entry, 12, "progression entry")
+			local index, item = u32(entry), u32(entry + 8)
+			if index >= count then error("progression index rejected", 0) end
+			local rec = records[item]
+			if rec then
+				local st = progression + L.states + index * 184
+				need(st, 184, "progression state")
+				local status = u32(st + 0x14)
+				if (status == 2 or status == 4) and u8(st + 0xb4) == 0 and not owned[item] then
+					owned[item] = true
+					total = total + 1
+				end
+			end
+		end
+		return owned, total, count
 	end
-	return owned, total, count
 end
 
 local function report_owned(owned, total, count)

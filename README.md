@@ -17,7 +17,7 @@ Python 3 and LuaJIT.
 ```
 python3 build.py public          # build-public/: the mod as released
 python3 build.py                 # build/: the author's personal build (extra DiverKit tile redraw)
-luajit test/harness.lua build-public/passive_picker.built.lua build-public/sigs.public.json <scratch dir> [nofont|badinput|saved]
+luajit test/harness.lua build-public/passive_picker.built.lua build-public/sigs.public.json <scratch dir> [nofont|badinput|saved|noarena|moved]
 luajit check.lua build-public/passive_picker.built.lua    # lists accidental globals; no output = clean
 python3 tools/make_release.py build-public release Simple-Armor-Passive-Picker-<version>.zip
 ```

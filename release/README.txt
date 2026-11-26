@@ -1,4 +1,4 @@
-Simple Armor Passive Picker 1.4.4
+Simple Armor Passive Picker 1.4.5
 by vibeslacker
 Made with AI.
 
@@ -108,6 +108,12 @@ DiverKit, whose mods showed me where the game keeps things. This mod
 contains none of their code and needs neither installed.
 
 CHANGES
+1.4.5
+  CHANGED
+  - Works on HellForge 0.5. HellForge 0.5 moves the game's list of owned
+    items to a new place to make room for more items, so 1.4.4 found no
+    armor there and never showed its boxes. 1.4.5 reads the list where 0.5
+    keeps it and still reads it where HellForge 0.4 and older keep it.
 1.4.4
   CHANGED
   - The two boxes now touch in the middle of the card and are centered on it
